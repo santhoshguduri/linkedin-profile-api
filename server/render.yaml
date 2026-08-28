@@ -1,0 +1,33 @@
+# Render blueprint. Kept alongside the Fly and Railway configs so the API is not
+# tied to one platform -- it is a plain Node server with no native dependencies.
+#
+# Secrets are marked sync:false, which makes Render prompt for them in the
+# dashboard instead of reading them from this file. Nothing secret is committed.
+services:
+  - type: web
+    name: linkedin-profile-api
+    runtime: node
+    rootDir: server
+    plan: free
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: OUTBOUND_RPM
+        value: "6"
+      - key: INBOUND_RPM
+        value: "30"
+      - key: ALLOW_REQUEST_CREDENTIALS
+        value: "true"
+      - key: CORS_ORIGIN
+        sync: false
+      - key: LI_AT
+        sync: false
+      - key: LI_JSESSIONID
+        sync: false
+      - key: API_KEY
+        sync: false
+      - key: PROXY_URL
+        sync: false

@@ -1,0 +1,36 @@
+# Fly.io. Deploy with:  fly launch --no-deploy   then   fly deploy
+# Secrets are set out of band and never live in this file:
+#   fly secrets set LI_AT=... LI_JSESSIONID=... API_KEY=...
+app = "linkedin-profile-api"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  NODE_ENV = "production"
+  PORT = "3000"
+  HOST = "0.0.0.0"
+  # LinkedIn throttles hard; this is the setting most worth leaving alone.
+  OUTBOUND_RPM = "6"
+  INBOUND_RPM = "30"
+  ALLOW_REQUEST_CREDENTIALS = "true"
+
+[http_service]
+  internal_port = 3000
+  force_https = true
+  auto_stop_machines = "suspend"
+  auto_start_machines = true
+  # Cold starts cost a few seconds, which is nothing next to a LinkedIn fetch.
+  min_machines_running = 0
+
+  [[http_service.checks]]
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "10s"
+    method = "GET"
+    path = "/health"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

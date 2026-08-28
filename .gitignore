@@ -1,0 +1,19 @@
+node_modules/
+dist/
+build/
+
+# Secrets. The .example files are committed; the real ones never are.
+.env
+.env.*
+!.env.example
+
+# Raw LinkedIn captures are credential-bearing: LinkedIn embeds data-csrf, whose
+# value is the JSESSIONID verbatim. Only redacted fixtures belong in git.
+fixtures/raw/
+*.raw.html
+
+*.log
+*.tmp.mjs
+.vite/
+.DS_Store
+Thumbs.db

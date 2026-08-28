@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Connect LinkedIn session</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <h1>LinkedIn session</h1>
+
+    <p id="status" class="status status--pending">Checking…</p>
+
+    <div id="actions" hidden>
+      <button id="send" class="btn btn--primary">Send to this tab</button>
+      <button id="copy" class="btn">Copy instead</button>
+      <p id="target" class="target"></p>
+    </div>
+
+    <p id="signin" class="hint" hidden>
+      <a href="https://www.linkedin.com/login" target="_blank" rel="noreferrer">
+        Sign in to LinkedIn
+      </a>
+      first, then reopen this.
+    </p>
+
+    <p id="result" class="result" role="status" aria-live="polite"></p>
+
+    <script src="popup.js"></script>
+  </body>
+</html>

@@ -1,0 +1,97 @@
+/**
+ * Express application wiring.
+ *
+ * This is an API server only -- the React client is a separate deployment on a
+ * separate origin, which is why CORS is real configuration here rather than a
+ * formality.
+ */
+import express, { type Express } from 'express';
+import cors from 'cors';
+import { rateLimit } from 'express-rate-limit';
+import { pinoHttp } from 'pino-http';
+import type { Logger } from 'pino';
+import type { Config } from './config.js';
+import { AppError } from './util/errors.js';
+import { ProfileService } from './service.js';
+import { requireApiKey } from './middleware/auth.js';
+import { errorHandler, notFound } from './middleware/errorHandler.js';
+import { profileRouter } from './routes/profile.js';
+import { systemRouter } from './routes/system.js';
+
+export const VERSION = '1.0.0';
+
+export interface App {
+  app: Express;
+  service: ProfileService;
+}
+
+export function createApp(config: Config, log: Logger): App {
+  const app = express();
+  const service = new ProfileService(config, log);
+
+  app.disable('x-powered-by');
+  /**
+   * One hop. Render and most PaaS front ends terminate TLS and append the client
+   * IP to X-Forwarded-For; `true` would trust the entire chain, letting a caller
+   * spoof its own IP straight past the rate limiter.
+   */
+  app.set('trust proxy', 1);
+
+  app.use(
+    pinoHttp({
+      logger: log,
+      // Platform health checks would otherwise dominate the log.
+      autoLogging: { ignore: (req) => req.url === '/health' },
+    }),
+  );
+
+  app.use(
+    cors({
+      origin: config.CORS_ORIGIN === '*' ? true : config.CORS_ORIGIN.split(',').map((o) => o.trim()),
+      methods: ['GET', 'POST'],
+      allowedHeaders: [
+      'content-type',
+      'x-api-key',
+      'authorization',
+      'x-li-at',
+      'x-li-jsessionid',
+      'x-li-cookie',
+      'x-li-username',
+      'x-li-password',
+    ],
+      maxAge: 86_400,
+    }),
+  );
+
+  app.use(express.json({ limit: '32kb' }));
+
+  /**
+   * Inbound limit, independent of the outbound LinkedIn budget: this one
+   * protects the process, the token bucket in the fetcher protects the LinkedIn
+   * session. Scoped to /api so it is not spent on health checks.
+   */
+  app.use(
+    '/api',
+    rateLimit({
+      windowMs: 60_000,
+      limit: config.INBOUND_RPM,
+      standardHeaders: 'draft-8',
+      legacyHeaders: false,
+      handler: (_req, _res, next, options) => {
+        next(
+          new AppError('RATE_LIMITED', `Too many requests. Limit is ${options.limit} per minute.`, {
+            retryAfterSeconds: Math.ceil(options.windowMs / 1000),
+          }),
+        );
+      },
+    }),
+  );
+
+  app.use(systemRouter(service, VERSION));
+  app.use('/api/profile', requireApiKey(config), profileRouter(service, config));
+
+  app.use(notFound);
+  app.use(errorHandler);
+
+  return { app, service };
+}

@@ -1,0 +1,18 @@
+[build]
+  command = "npm run build"
+  publish = "dist"
+
+# Single-page app: every path serves index.html and the client routes it.
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Content-Type-Options = "nosniff"
+    # The visitor's LinkedIn cookie passes through this page; a referrer leaking
+    # to a third party is a leak worth closing even though the URL carries nothing.
+    Referrer-Policy = "no-referrer"
+    X-Frame-Options = "DENY"

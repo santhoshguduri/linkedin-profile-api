@@ -1,0 +1,17 @@
+{
+  "manifest_version": 3,
+  "name": "LinkedIn Session Connector",
+  "version": "1.0.0",
+  "description": "Hands your existing LinkedIn session to the LinkedIn Profile API, so you never have to find a cookie by hand.",
+
+  "permissions": ["cookies", "activeTab", "scripting"],
+
+  "host_permissions": ["https://www.linkedin.com/*"],
+
+  "optional_host_permissions": ["https://*/*", "http://localhost/*", "http://127.0.0.1/*"],
+
+  "action": {
+    "default_title": "Connect LinkedIn session",
+    "default_popup": "popup.html"
+  }
+}
