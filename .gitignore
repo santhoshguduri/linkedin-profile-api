@@ -17,3 +17,6 @@ fixtures/raw/
 .vite/
 .DS_Store
 Thumbs.db
+
+# Incremental TypeScript build state: machine-local, regenerated on every build.
+*.tsbuildinfo

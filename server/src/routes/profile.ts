@@ -22,9 +22,11 @@ import type { ProfileService } from '../service.js';
  * it in three different shapes: `liAt` from the browser extension, `cookie` from
  * someone who copied the whole request header, and `jsessionId` alongside either.
  *
- * `username`/`password` are accepted by the parser purely so a caller who sends
- * them gets a precise LOGIN_UNSUPPORTED instead of a schema error that reads
- * like a typo. LinkedIn retired form-based sign-in; only a cookie works.
+ * `username`/`password` are the fourth: the server signs in through a browser,
+ * harvests the cookie and uses it for this one lookup. It is the slowest path by
+ * far -- and if LinkedIn asks for a phone approval it cannot complete inside a
+ * single request -- so the response says so and points at /api/auth/login, where
+ * the sign-in can be driven properly and the cookie reused.
  */
 const CredentialsSchema = z.object({
   liAt: z.string().min(1).optional(),
@@ -80,11 +82,41 @@ export function profileRouter(service: ProfileService, config: Config): Router {
       }
 
       const body = parsed.data.credentials;
-      if (body?.username?.trim() || body?.password?.trim() || req.get('x-li-password')) {
-        throw new AppError(
-          'LOGIN_UNSUPPORTED',
-          'LinkedIn no longer offers a form-based sign-in, so an email and password cannot be exchanged for a session.',
+
+      // Password path: exchange the credentials for a cookie first, then fall
+      // through to the ordinary lookup with it. Anything that needs a human --
+      // an app approval, a code -- surfaces as CHALLENGE_PENDING with a handle,
+      // which the caller finishes at /api/auth/verify.
+      const username = (body?.username ?? req.get('x-li-username'))?.trim();
+      const password = body?.password ?? req.get('x-li-password');
+      if (username && password) {
+        if (!config.ALLOW_REQUEST_CREDENTIALS) {
+          throw new AppError(
+            'BAD_REQUEST',
+            'This deployment does not accept LinkedIn credentials on the request.',
+          );
+        }
+        const progress = await service.logins.start(username, password);
+        if (progress.status === 'failed') throw new AppError('LOGIN_FAILED', progress.message);
+        if (progress.status === 'challenge') {
+          throw new AppError(
+            progress.handle ? 'CHALLENGE_PENDING' : 'CHALLENGE_REQUIRED',
+            progress.message,
+            { details: { handle: progress.handle, challenge: progress.kind } },
+          );
+        }
+
+        res.json(
+          await service.getProfile(parsed.data.url, {
+            refresh: parsed.data.refresh,
+            credentials: progress.credentials,
+          }),
         );
+        return;
+      }
+
+      if (username || password) {
+        throw new AppError('BAD_REQUEST', 'Both username and password are required to sign in.');
       }
 
       // Rebuilt field by field so nothing beyond the cookie pair can travel on.

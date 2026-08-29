@@ -40,7 +40,12 @@ Three pieces, deployed independently:
 |---|---|
 | `server/` | Express 5 + TypeScript API. This is the deliverable. |
 | `web/` | React 19 + Vite client. A UI over the API; useful for demoing, not required by it. |
-| `extension/` | ~150-line browser extension that hands your LinkedIn session to the API in one click, so nobody has to go hunting for a cookie. |
+| `extension/` | ~150-line browser extension for anyone already signed in to LinkedIn in that browser: it hands the existing session over in one click, with no password typed. |
+
+The API takes an email and password directly, drives a real browser through
+LinkedIn's sign-in, waits out the approval tap on your phone, and keeps only the
+session cookie that falls out the other end. The extension is the alternative for
+people who would rather not hand over a password at all.
 
 ---
 
@@ -48,6 +53,8 @@ Three pieces, deployed independently:
 
 - [Quick start](#quick-start)
 - [Authentication](#authentication) — read this one
+  - [Signing in with an email and password](#signing-in-with-an-email-and-password)
+  - [The approval on your phone](#the-approval-on-your-phone)
 - [Configuration](#configuration)
 - [API documentation](#api-documentation)
 - [Approach](#approach)
@@ -67,6 +74,7 @@ Requires Node 20 or newer.
 # API
 cd server
 npm install
+npx playwright install chromium   # only needed for email/password sign-in
 cp .env.example .env       # optional: paste an li_at into it, see Authentication
 npm run dev                # http://localhost:3000
 
@@ -77,9 +85,14 @@ cp .env.example .env       # VITE_API_URL=http://localhost:3000
 npm run dev                # http://localhost:5173
 ```
 
-Then load the extension: `chrome://extensions` → Developer mode → **Load
-unpacked** → pick `extension/`. Open the web app, click the extension, press
-**Send to this tab**, and you are connected.
+Open the web app, press **Settings**, and sign in with your LinkedIn email and
+password. If LinkedIn asks you to approve it from the LinkedIn app on your phone,
+the dialog waits while you do.
+
+If you would rather not hand over a password — and you are already signed in to
+LinkedIn in this browser — load the extension instead: `chrome://extensions` →
+Developer mode → **Load unpacked** → pick `extension/`, then click it and press
+**Send to this tab**. Both routes end with the same session cookie.
 
 Verify the API on its own:
 
@@ -100,113 +113,157 @@ cd web    && npm run build          # static output in web/dist
 
 ## Authentication
 
-**The API authenticates with a LinkedIn session cookie, not an email and
-password.** That is not a shortcut — it is the only thing that works, and it is
-what every commercial tool in this space does. The reasoning is worth reading
-before you judge the design.
+Every lookup runs as some LinkedIn identity. There are four ways to give the API
+one, and **all four end in the same place**: a `li_at` session cookie. That is
+worth stating plainly up front, because it explains why signing in with a
+password is not a different scraping mode — it is a way of *obtaining* the
+cookie, after which nothing downstream can tell the difference.
 
-### Why not email and password
+| Way in | What you provide | Needs a browser on the server | Best for |
+|---|---|---|---|
+| Email + password | LinkedIn credentials | yes | a person using the web app |
+| Extension | one click | no | a person already signed in here |
+| Pasted cookie | the `Cookie:` header | no | curl, scripts, no-extension browsers |
+| `LI_AT` env var | the cookie | no | an unattended deployment |
 
-Fetching `https://www.linkedin.com/login` today returns:
+### Signing in with an email and password
 
-- HTTP 200, ~488 KB, and **zero `<form>` elements**
-- no `loginCsrfParam`, no `session_key` field, no `/checkpoint/lg/login-submit`
-- a `window.__como_rehydration__` payload instead
+This is the flow the hosted web app leads with, and it is the one that needs
+explaining, because it cannot be done with an HTTP client.
 
-The login page is now server-driven UI: `proto.sdui.*` protobuf-shaped JSON
-actions embedded in that payload. The sign-in action reads:
+**LinkedIn's login page has no `<form>`.** Captured from the live page:
 
-```jsonc
-{
-  "requestId": "com.linkedin.sdui.requests.login.authenticate",
-  "authenticationType": "AuthenticationType_PASSWORD",
-  "identifier": "memberIdentifierInput",
-  "password":   "passwordInput",
-  "isEncrypted": true,          // the browser encrypts it before it is sent
-  "apfc": "..."                 // device-signal fingerprint token
-}
+```
+forms:  0
+inputs: type=email    autocomplete="username webauthn"   id="«r3»"  name=""
+        type=password autocomplete="current-password"    id="«r4»"  name=""
+buttons: type=button  text="Sign in"
 ```
 
-The password is encrypted client-side with a key from the page bundle and sent
-with a device fingerprint. The bundle entry point
-(`static.licdn.com/aero-v1/sc/h/assets/RocgrYlk.js`) is 4 KB — a loader; the real
-code sits behind an import map in obfuscated chunks. Reproducing that would mean
-running a headless browser, and LinkedIn issues a CAPTCHA or an emailed PIN to
-almost any login from a datacenter IP anyway, so it would still need a human.
+Sign-in is declared instead as a server-driven-UI action,
+`com.linkedin.sdui.requests.login.authenticate`, carrying
+`"isEncrypted": true` and an `apfc` device-fingerprint token. The password is
+encrypted **in the page**, by LinkedIn's own JavaScript, before anything is
+sent; the fingerprint is minted the same way. Reproducing either outside a
+browser means reimplementing code that changes without notice.
 
-So a password is rejected at the route with `LOGIN_UNSUPPORTED` (501) and a hint
-pointing at the real path, rather than half-attempted and failing three layers
-deep with a confusing message.
+So the server drives a real Chromium through the real page and lets LinkedIn's
+own JavaScript do the encrypting. `server/src/linkedin/login.ts`.
 
-This is also what the reference platforms do. PhantomBuster, Expandi, Dripify
-and Waalaxy all ask for the session cookie and none of them accept a LinkedIn
-password. What they add on top is a browser extension that fetches the cookie
-for you — which is the part this repo reproduces.
+### The approval on your phone
 
-### Three ways to hand over a session
+Once the password is accepted, LinkedIn usually does **not** hand over a session
+straight away. Because the sign-in is coming from a server it has never seen, it
+redirects to `/checkpoint/challenge/...` and pushes a notification to the
+LinkedIn app on the account holder's phone. That checkpoint page then
+**long-polls**, waiting.
 
-In descending order of how much the user needs to understand:
+That wait is why `/api/auth` is three endpoints rather than one. A sign-in can
+pause for as long as it takes somebody to find their phone, which is longer than
+any HTTP request should stay open:
 
-#### 1. The extension (what a normal user does)
+```
+POST /api/auth/login    {username, password}
+   -> 200  authenticated                    (no challenge; cookie returned)
+   -> 428  CHALLENGE_PENDING + handle       (go tap approve, then poll)
 
-`extension/` is a Manifest V3 extension. Load it unpacked, click it while signed
-in to LinkedIn, press **Send to this tab**, and the web app fills itself in. The
-user never sees a cookie or opens DevTools.
+POST /api/auth/verify   {handle}            poll the approval
+POST /api/auth/verify   {handle, code}      or answer a verification code
+   -> 200  authenticated                    (cookie returned)
+   -> 428  CHALLENGE_PENDING                (still waiting; call again)
 
-It has to be an extension rather than a bookmarklet, and the reason is the
-interesting bit: **`li_at` is `HttpOnly`**. `document.cookie` returns every
-LinkedIn cookie *except* the one that matters, so no page script can capture it.
-Only the browser's own `chrome.cookies` API can — which is exactly why the
-commercial tools ship extensions too.
-
-The extension has no network code at all. Its standing permissions are LinkedIn
-cookies and nothing else; access to the page you send to is requested at the
-moment you press the button, for that one origin. See `extension/README.md`.
-
-#### 2. Paste the cookie header
-
-For anyone who cannot install an extension. DevTools → **Network** → click any
-`linkedin.com` request → copy the whole `Cookie:` request header → paste it into
-the app's **No extension?** box, or send it directly:
-
-```bash
-curl -X POST https://<host>/api/profile \
-  -H 'content-type: application/json' \
-  -d '{ "url": "williamhgates", "credentials": { "cookie": "bcookie=...; li_at=AQEDAT...; JSESSIONID=\"ajax:1\"; lidc=..." } }'
+POST /api/auth/cancel   {handle}            give up, free the browser
 ```
 
-The server picks out `li_at` and `JSESSIONID` and **discards everything else** —
-a copied header also carries analytics and fingerprinting cookies, and there is
-no reason to forward those to LinkedIn on someone's behalf.
+The browser stays open between calls — parked in an in-memory registry under
+the handle — because the tab that started the sign-in has to be the tab that
+finishes it. Closing and reopening would lose the checkpoint. Parked sign-ins
+are dropped after five minutes, and at most four are held at once; each one is
+roughly 100 MB of Chromium.
 
-#### 3. The raw values
+`/api/auth/login` blocks for up to `LOGIN_WAIT_MS` (default 20s) before giving
+up and handing back a handle, because an approval is often tapped within a few
+seconds and it is better to answer once than to make the client poll for
+something that already happened.
 
-For operators. DevTools → **Application** → **Cookies** → `li_at`. This is what
-goes in `server/.env` for a deployment that has a session of its own:
+Four challenge kinds are recognised, and the difference matters — two of them
+are resolvable and two are not:
 
-```env
-LI_AT=AQEDAT...
-LI_JSESSIONID="ajax:1234567890"
-```
+| Kind | Resolvable | What happens |
+|---|---|---|
+| `app-approval` | yes | polled automatically; resolves when you tap approve |
+| `code` | yes | the API asks for the code and submits it |
+| `captcha` | no | nobody can answer it unattended; browser is closed immediately |
+| `unknown` | no | an unrecognised checkpoint; browser is closed immediately |
+
+Classification is a pure function, `classifyChallenge()`, and it is tested
+against the real wordings in `tests/login.test.ts`. Order matters there: a
+CAPTCHA page also says "verification", and the approval page offers "enter a
+code instead" as a fallback underneath, so the most specific signal has to win
+or the API sits waiting for input that is never coming.
+
+### What is stored
+
+**The password is used once and kept nowhere.** It is not written to disk, not
+logged (`req.body.password` is in the redaction list), and not held in memory
+past the sign-in. What comes back is the cookie, and the caller keeps it — the
+server holds no user sessions, so there is nothing on it to steal and nothing to
+expire. The web app keeps it in `sessionStorage`, which is cleared when the tab
+closes.
+
+A cookie is also the *safer* thing to hold: it is one revocable session, not
+account control. Revoke it from LinkedIn's own "Where you're signed in" list.
+
+### The three cookie paths
+
+Signing in with a password is the friendliest option but the most expensive one:
+it launches a browser and it may need a phone. The other three skip all of that.
+
+**1. The extension** (`extension/`) reads the cookie out of a browser that is
+already signed in to LinkedIn, and posts it to the web app. One click, no
+password, no verification — the sign-in already happened.
+
+It has to be an extension rather than a bookmarklet, and that is not a
+preference: **`li_at` is `HttpOnly`**. `document.cookie` cannot see it. Only the
+browser's own `chrome.cookies` API can, and only an extension can call that.
+This is also why the commercial tools all ship one.
+
+**2. Pasting the cookie.** DevTools → Network → any `linkedin.com` request →
+copy the `Cookie` request header, paste the whole thing. The server picks out
+`li_at` and `JSESSIONID` and **discards the rest** rather than forwarding it — a
+copied header also carries analytics and fingerprinting cookies there is no
+reason to hold. A bare `li_at` value on its own is accepted too.
+
+**3. `LI_AT` in the environment**, for a deployment that should have an identity
+of its own. See below.
 
 ### Whose session gets used
 
-| Situation | Runs as |
-|---|---|
-| Caller sent credentials | The caller's session |
-| Caller sent nothing, `LI_AT` is set | The deployment's session |
-| Neither | `NOT_CONFIGURED`, with a hint explaining both options |
+Precedence, per request:
 
-Both can be live at once. A public demo should set `LI_AT` so it works out of the
-box, while visitors who connect their own session spend their own rate limit
-rather than the operator's. `ALLOW_REQUEST_CREDENTIALS=false` pins everything to
-the deployment's session.
+1. A session on the request — signed in, pasted, or from the extension.
+2. Otherwise the deployment's own session.
 
-A caller-supplied session is never written to disk. It is held in memory only
-while in use — 15 minutes idle, 12 identities maximum — then dropped. A `li_at`
-is revoked the moment you sign that LinkedIn session out.
+The deployment's own session comes from `LI_AT` if it is set. If it is not, and
+`LI_USERNAME`/`LI_PASSWORD` are, the server signs itself in on first use through
+the same browser flow and **promotes the harvested cookie to be** its session,
+so the second request costs nothing. That sign-in is single-flighted: ten
+concurrent cold-start requests trigger one browser and one approval push, not
+ten.
 
----
+If LinkedIn later rejects that cookie, it is dropped and the next request signs
+in again. A cookie that came from `LI_AT` is left alone instead — re-signing-in
+cannot fix an environment variable.
+
+> **For an unattended deploy, prefer `LI_AT`.** LinkedIn treats a new server IP
+> as a new device, so `LI_USERNAME`/`LI_PASSWORD` will very likely need one
+> approval tap that nobody is there to give. The harvested cookie is also held
+> in memory only, so a restart re-triggers it.
+
+Set `ALLOW_REQUEST_CREDENTIALS=false` to refuse caller sessions entirely and pin
+every lookup to the deployment's own; `/api/auth` then returns `BAD_REQUEST`.
+Set `BROWSER_LOGIN=false` to make the API cookie-only, for a host with no
+Chromium or no spare memory; `/api/auth` then returns `LOGIN_UNAVAILABLE`.
 
 ## Configuration
 
@@ -217,8 +274,12 @@ Server config is environment variables; `server/.env.example` is the annotated l
 | `LI_AT` | — | The deployment's own LinkedIn session cookie. Without it the server still boots and still serves callers who bring their own. |
 | `LI_JSESSIONID` | — | Optional. Makes the session slightly stabler. |
 | `LI_BCOOKIE`, `LI_LIDC` | — | Optional ambient cookies. |
-| `API_KEY` | — | When set, `/api/profile` requires `x-api-key` (or `Authorization: Bearer`). Unset means open. |
-| `ALLOW_REQUEST_CREDENTIALS` | `true` | Whether callers may attach their own session. |
+| `LI_USERNAME`, `LI_PASSWORD` | — | The deployment's own LinkedIn account. Used **only when `LI_AT` is empty**: the server signs itself in through a browser on first use. Expect a one-time approval on the account holder's phone. |
+| `BROWSER_LOGIN` | `true` | Whether this deployment may launch Chromium at all. `false` makes the API cookie-only and `/api/auth` returns `LOGIN_UNAVAILABLE`. |
+| `BROWSER_HEADLESS` | `true` | `false` shows the window. Only useful for debugging a sign-in locally. |
+| `LOGIN_WAIT_MS` | `20000` | How long one sign-in request blocks waiting for a phone tap before answering "still waiting". Keep under your platform's proxy timeout. |
+| `API_KEY` | — | When set, `/api/profile` and `/api/auth` require `x-api-key` (or `Authorization: Bearer`). Unset means open. |
+| `ALLOW_REQUEST_CREDENTIALS` | `true` | Whether callers may sign in or attach their own session. `false` disables `/api/auth`. |
 | `CORS_ORIGIN` | `*` | Comma-separated origins. Pin this to your client URL in production. |
 | `INBOUND_RPM` | `30` | Requests per minute per client IP. |
 | `OUTBOUND_RPM` | `6` | Requests per minute to LinkedIn. Above ~6 invites HTTP 999. |
@@ -266,10 +327,63 @@ entered. Reports *whether* a credential is configured, never the credential.
   "tokensAvailable": 6,
   "credentialsConfigured": true,
   "authMode": "cookie",
+  "sessionReady": true,
   "acceptsRequestCredentials": true,
-  "activeSessions": 2
+  "passwordLoginAvailable": true,
+  "activeSessions": 2,
+  "activeLogins": 0
 }
 ```
+
+`authMode` is `cookie`, `credentials` or `none` — how this deployment gets its
+own identity. `credentialsConfigured` says a way in exists; `sessionReady` says
+a cookie is actually in hand. They differ during the window between boot and the
+first sign-in. `activeLogins` counts browsers parked on a challenge.
+
+### `POST /api/auth/login`
+
+Signs in with an email and password. Rate limited to 10/min per IP, separately
+from and far harder than `/api/profile` — each attempt drives a real browser at
+LinkedIn's login page.
+
+```jsonc
+{ "username": "you@example.com", "password": "..." }
+```
+
+Signed straight in:
+
+```json
+{ "status": "authenticated", "credentials": { "liAt": "AQEDA...", "jsessionId": "ajax:12345" } }
+```
+
+Needs your phone (HTTP **428**):
+
+```json
+{
+  "error": {
+    "code": "CHALLENGE_PENDING",
+    "message": "LinkedIn sent an approval request to the LinkedIn app on your phone. Open it and tap approve; this stays open while you do.",
+    "hint": "Approve the sign-in in the LinkedIn app on your phone, then POST the handle back to /api/auth/verify.",
+    "details": { "handle": "kQ8x...", "challenge": "app-approval" }
+  }
+}
+```
+
+### `POST /api/auth/verify`
+
+Takes a parked sign-in one step further. Send `{ "handle": "..." }` on its own to
+poll an app approval, or `{ "handle": "...", "code": "123456" }` to answer a
+verification code. Returns the same shapes as `/login`: `authenticated` on
+success, another `CHALLENGE_PENDING` while still waiting, `CHALLENGE_EXPIRED`
+(HTTP 410) once the handle is gone.
+
+Each call is held open for up to `LOGIN_WAIT_MS`, so polling in a loop is a few
+requests per minute rather than a busy wait.
+
+### `POST /api/auth/cancel`
+
+`{ "handle": "..." }` — abandons a sign-in and frees its browser. Returns
+`{ "cancelled": true }`, or `false` if the handle was already gone.
 
 ### `GET /api/profile`
 
@@ -374,11 +488,14 @@ offers plus `url` for the largest.
 | `BAD_REQUEST` | 400 | Malformed credentials, a paste with no `li_at` in it, or credentials sent to a deployment that refuses them. |
 | `UNAUTHORIZED` | 401 | `API_KEY` is set and `x-api-key` was wrong or absent. |
 | `SESSION_INVALID` | 401 | LinkedIn served the authwall. The cookie is dead. |
-| `CHALLENGE_REQUIRED` | 403 | Checkpoint or CAPTCHA. Clear it in a browser, reconnect. |
+| `LOGIN_FAILED` | 401 | LinkedIn rejected the email or password, in its own words. |
+| `CHALLENGE_REQUIRED` | 403 | A checkpoint this API cannot clear — a CAPTCHA, or an unrecognised one. Sign in from your own browser once. |
+| `CHALLENGE_EXPIRED` | 410 | The sign-in handle is gone: five minutes elapsed, or the server restarted. |
+| `CHALLENGE_PENDING` | 428 | Waiting on you. Carries `details.handle` and `details.challenge`. Not a failure — poll `/api/auth/verify`. |
 | `PROFILE_NOT_FOUND` | 404 | No such identifier, or invisible to this session. |
 | `NOT_FOUND` | 404 | Unknown route. |
 | `RATE_LIMITED` | 429 | Inbound limit hit. Carries `retryAfterSeconds`. |
-| `LOGIN_UNSUPPORTED` | 501 | An email/password was sent. See [Authentication](#why-not-email-and-password). |
+| `LOGIN_UNAVAILABLE` | 501 | `BROWSER_LOGIN=false`, or Chromium is not installed on the host. |
 | `NOT_CONFIGURED` | 503 | No session available — none on the server, none on the request. |
 | `UPSTREAM_THROTTLED` | 503 | LinkedIn returned HTTP 999, or the breaker is open. |
 | `UPSTREAM_ERROR` | 502 | LinkedIn returned something unrecognisable. |
@@ -502,16 +619,30 @@ halves cannot drift.
 
 ## Known limitations
 
-- **No email/password sign-in.** Covered at length in
-  [Authentication](#why-not-email-and-password). The extension exists to make the
-  cookie requirement invisible to normal users, not to work around it.
+- **Password sign-in needs a browser on the server, and it is not free.** Each
+  attempt launches Chromium (~100 MB RSS, a second or two of startup) and the
+  runtime image is ~1.5 GB rather than ~150 MB. A host with 256 MB of RAM cannot
+  run it; set `BROWSER_LOGIN=false` there and use a cookie.
+- **A password sign-in usually needs a phone the first time.** LinkedIn treats a
+  new server IP as a new device. That is fine for a person using the web app and
+  awkward for an unattended deploy, which is why `LI_AT` is still the
+  recommendation for one. Harvested cookies live in memory only, so a restart
+  re-triggers the approval.
+- **The login page is scraped markup too.** It carries no `<form>`, no stable
+  `id` (React `useId` emits `«r0»`), and no `name` attributes, so the selectors
+  match on `type` and `autocomplete` and filter to the visible copy of each
+  duplicated field. Verified against the live page; still, LinkedIn can change
+  it, and `LOGIN_FAILED` with "could not fill in" is what that looks like.
+- **A CAPTCHA ends the sign-in.** `captcha` and `unknown` challenges close the
+  browser immediately rather than parking it, because there is no step this API
+  could take next. Sign in from your own browser once to clear it.
 - **The extension is unpacked-only.** It is not on the Chrome Web Store, so it
   installs via Developer mode. Chromium browsers only; Firefox would need
   `browser.*` shims.
 - **Cookies expire and can be challenged.** A `li_at` lasts roughly a year, but
-  LinkedIn may issue a checkpoint at any time — a CAPTCHA or an emailed PIN. A
-  server cannot answer either unattended, so `CHALLENGE_REQUIRED` asks a human to
-  clear it in a browser and reconnect.
+  LinkedIn may issue a checkpoint at any time. When the deployment's own cookie
+  came from a sign-in, it is dropped and re-acquired automatically; when it came
+  from `LI_AT`, `SESSION_INVALID` asks for a fresh one.
 - **Datacenter IPs get throttled hard.** LinkedIn rate-limits cloud ranges far
   more aggressively than residential ones. A free-tier deploy will meet HTTP 999
   sooner than a local run. `PROXY_URL` exists for this, and `OUTBOUND_RPM` should
@@ -533,10 +664,12 @@ halves cannot drift.
   it. Redis would be the fix; it was not worth the dependency here.
 - **Live field coverage is unverified.** Extraction is tested against recorded
   fixtures, and the auth, error, rate-limit and redaction paths are tested live
-  against the running server. But the pipeline has not been run end-to-end
-  against a real profile with a valid cookie, because no live session was
-  available during development and the development IP is currently serving
-  HTTP 999. Expect a round of extractor tuning against your own first capture.
+  against the running server. The sign-in page is verified live: Chromium
+  reaches it, `navigator.webdriver` reads `false`, and the email, password and
+  submit locators all resolve and fill. But **no sign-in has been completed and
+  no profile extracted end-to-end**, because no LinkedIn account was used during
+  development and the development IP is currently serving HTTP 999. Expect a
+  round of extractor tuning against your own first capture.
 - **Person profiles only.** Company and school pages are out of scope.
 
 ---
@@ -579,7 +712,30 @@ docker run -p 3000:3000 -e LI_AT='AQEDAT...' linkedin-profile-api
 ```
 
 Multi-stage, so TypeScript never reaches the runtime image; runs as the
-unprivileged `node` user.
+unprivileged `pwuser`.
+
+The runtime stage is `mcr.microsoft.com/playwright`, not `node:alpine`, because
+password sign-in needs Chromium and Chromium needs ~90 shared libraries (fonts,
+nss, libdrm, ...). Installing those onto a slim base by hand is a long list that
+drifts with every Chromium release. The cost is image size: roughly 1.5 GB,
+against roughly 150 MB for the Node image.
+
+**The base image tag and the `playwright` dependency must name the same
+version.** They are both pinned to `1.62.1`; bump them together or the browser
+will not launch. The dependency is pinned exactly rather than with a caret for
+this reason.
+
+For a host that cannot spare that, build without the browser and run cookie-only:
+
+```bash
+docker run -p 3000:3000 -e LI_AT='AQEDAT...' -e BROWSER_LOGIN=false linkedin-profile-api
+```
+
+Running locally outside Docker needs the browser fetched once:
+
+```bash
+cd server && npx playwright install chromium
+```
 
 ### Client
 
@@ -612,13 +768,15 @@ server/
     config.ts             env schema and validation
     service.ts            session pool, cache, in-flight coalescing
     middleware/           api key gate, error handler
-    routes/               profile, system
+    routes/               profile, auth, system
     schema/profile.ts     the response contract — the source of truth
     util/                 cache, errors, logger, rate limiting
     linkedin/
       fetcher.ts          retries, breaker, cookies, redirects
       session.ts          cookie jar, headers, auth-state detection
       credentials.ts      session resolution, cookie parsing, identity digests
+      login.ts            browser-driven sign-in; challenge classification
+      loginManager.ts     parked sign-ins, TTL, single-flight env login
       url.ts              profile URL parsing
       ssr/                RSC flight payload decoder
       pages/              profile, details and contact-info page fetchers
@@ -632,6 +790,7 @@ web/
   src/
     api.ts                typed client; imports server types directly
     extensionBridge.ts    receives a session from the extension
+    useSignIn.ts          sign-in state machine, approval polling
     useProfileLookup.ts   request state machine
     App.tsx               shell
     components/           profile sections, settings dialog, error panel
@@ -646,14 +805,20 @@ extension/
 
 ```bash
 cd server
-npm test            # vitest, 66 tests
+npm test            # vitest, 78 tests
 npm run typecheck
 ```
 
 Tests run against recorded fixtures — no network, no LinkedIn session needed.
 They cover the flight decoder including the chunk-splitting case that breaks
 naive parsers, URL parsing, session resolution, pasted-cookie parsing, cookie jar
-construction and auth-state detection.
+construction, auth-state detection, and the challenge classifier that decides
+whether a stalled sign-in is waiting on a phone tap or on a typed code.
+
+The sign-in itself is not unit-tested — it needs a browser and a LinkedIn
+account. Its browser-independent half is (`classifyChallenge`,
+`credentialErrorFrom`), and the selectors were verified against the live login
+page.
 
 To debug an extraction against a real page, save the HTML and run:
 

@@ -12,7 +12,16 @@ export interface SessionCredentials {
   jsessionId?: string | undefined;
 }
 
-export type AuthMode = 'cookie' | 'none';
+/**
+ * How a lookup got its session.
+ *
+ * `credentials` and `cookie` differ only in provenance -- a password sign-in
+ * ends by harvesting `li_at` from a browser, so by the time a request is served
+ * both modes are the same cookie. The distinction is kept because it is the
+ * honest answer to "what did this deployment need from me", which /api/status
+ * reports.
+ */
+export type AuthMode = 'cookie' | 'credentials' | 'none';
 
 export interface ResolvedSession {
   readonly credentials: SessionCredentials;
@@ -43,16 +52,17 @@ const digest = (value: string): string =>
   createHash('sha256').update(value).digest('hex').slice(0, 16);
 
 /**
- * A session is a cookie or it is nothing.
+ * Normalises whatever cookie material arrived into one identity.
  *
- * Email/password is deliberately absent: LinkedIn retired form-based sign-in, so
- * a plain HTTP client cannot exchange credentials for a session. See the README
- * for the capture that shows it. Requests that carry a password are rejected at
- * the route with LOGIN_UNSUPPORTED rather than half-handled here.
+ * Email and password never reach this function. A password is exchanged for a
+ * cookie first, in `login.ts`, and only the cookie is passed on -- so there is
+ * exactly one notion of identity downstream, and a pooled session cannot depend
+ * on how it was obtained.
  */
 export function resolveSession(
   input: SessionCredentials,
   fromEnvironment = false,
+  mode: Exclude<AuthMode, 'none'> = 'cookie',
 ): ResolvedSession {
   const liAt = trim(input.liAt);
   // LinkedIn stores JSESSIONID quoted; both forms are accepted on input.
@@ -62,7 +72,7 @@ export function resolveSession(
 
   return {
     credentials: { liAt, jsessionId },
-    mode: 'cookie',
+    mode,
     key: `c_${digest(liAt)}`,
     fromEnvironment,
   };

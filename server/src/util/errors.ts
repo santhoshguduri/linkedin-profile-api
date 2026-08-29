@@ -13,7 +13,10 @@ export const ERROR_CODES = [
   'NOT_CONFIGURED',
   'SESSION_INVALID',
   'CHALLENGE_REQUIRED',
-  'LOGIN_UNSUPPORTED',
+  'CHALLENGE_PENDING',
+  'CHALLENGE_EXPIRED',
+  'LOGIN_FAILED',
+  'LOGIN_UNAVAILABLE',
   'PROFILE_NOT_FOUND',
   'NOT_FOUND',
   'RATE_LIMITED',
@@ -32,7 +35,12 @@ const STATUS: Record<ErrorCode, number> = {
   NOT_CONFIGURED: 503,
   SESSION_INVALID: 401,
   CHALLENGE_REQUIRED: 403,
-  LOGIN_UNSUPPORTED: 501,
+  // 428: the request is fine, but a step outside it has to happen first --
+  // somebody has to tap approve on their phone.
+  CHALLENGE_PENDING: 428,
+  CHALLENGE_EXPIRED: 410,
+  LOGIN_FAILED: 401,
+  LOGIN_UNAVAILABLE: 501,
   PROFILE_NOT_FOUND: 404,
   NOT_FOUND: 404,
   RATE_LIMITED: 429,
@@ -47,9 +55,14 @@ const HINTS: Partial<Record<ErrorCode, string>> = {
   SESSION_INVALID:
     'LinkedIn served the logged-out authwall. The li_at cookie is missing, expired or revoked — refresh it and redeploy.',
   CHALLENGE_REQUIRED:
-    'LinkedIn served a checkpoint/captcha. Sign in from a browser, clear the challenge, then set LI_AT from that session -- a server cannot answer a CAPTCHA or an emailed PIN unattended.',
-  LOGIN_UNSUPPORTED:
-    'Send a li_at cookie instead: sign in to LinkedIn in a browser, then copy li_at from DevTools > Application > Cookies.',
+    'LinkedIn served a checkpoint it will not let this server clear. Sign in from your own browser once, then retry -- or set LI_AT from that session.',
+  CHALLENGE_PENDING:
+    'Approve the sign-in in the LinkedIn app on your phone, then POST the handle back to /api/auth/verify.',
+  CHALLENGE_EXPIRED:
+    'Verification requests are held for five minutes, and are dropped when the server restarts. Start the sign-in again.',
+  LOGIN_FAILED: 'Check the email and password, then try again.',
+  LOGIN_UNAVAILABLE:
+    'This deployment cannot run a browser. Send a li_at cookie instead, or deploy the Docker image, which ships Chromium.',
   UPSTREAM_THROTTLED:
     'LinkedIn is rate limiting this IP (HTTP 999). Wait for the cooldown, lower OUTBOUND_RPM, or route through PROXY_URL.',
   NOT_CONFIGURED:

@@ -468,8 +468,6 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.65); backdrop-filter: blur(3px); 
 .settings-form .note { margin: 0.6rem 0 0; font-size: 0.78rem; line-height: 1.45; }
 .settings-form .note.warn { color: var(--warn); }
 
-.mode-switch { display: flex; gap: 0.3rem; margin: 0.2rem 0 0.8rem; border-bottom: 1px solid var(--border); }
-.mode-switch .tab { padding: 0.4rem 0.7rem; font-size: 0.82rem; }
 
 .error-action {
   margin-top: 0.9rem;
@@ -552,3 +550,35 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.65); backdrop-filter: blur(3px); 
 }
 .settings-form textarea:focus { outline: none; border-color: var(--accent); }
 .settings-form textarea::placeholder { color: var(--text-faint); }
+
+/* --- Sign-in ------------------------------------------------------------- */
+.signin { display: flex; flex-direction: column; }
+.signin .primary { margin-top: 0.7rem; align-self: flex-start; }
+.signin .primary:disabled { opacity: 0.45; cursor: not-allowed; background: var(--accent); }
+
+/*
+ * The challenge panel is deliberately loud. It is the one moment the app is
+ * waiting on something happening outside the screen, and a person who does not
+ * notice it will conclude the sign-in hung.
+ */
+.challenge {
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  padding: 0.9rem 1rem;
+  background: rgba(88, 140, 255, 0.07);
+}
+.challenge-message { margin: 0 0 0.7rem !important; color: var(--text-dim) !important; }
+.challenge .row { display: flex; gap: 0.5rem; align-items: center; }
+.challenge .row input { flex: 1; margin-top: 0 !important; }
+.challenge .ghost { margin-top: 0.7rem; font-size: 0.8rem; }
+
+.settings-form .error {
+  margin: 0.8rem 0 0;
+  padding: 0.6rem 0.75rem;
+  border-radius: 6px;
+  border: 1px solid var(--danger, #ff6b6b);
+  background: rgba(255, 107, 107, 0.08);
+  color: var(--text-dim);
+  font-size: 0.83rem;
+}
+.settings-form .error .note { display: block; margin-top: 0.3rem; }

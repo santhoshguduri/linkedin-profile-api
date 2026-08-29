@@ -24,7 +24,10 @@ export type ErrorCode =
   | 'NOT_CONFIGURED'
   | 'SESSION_INVALID'
   | 'CHALLENGE_REQUIRED'
-  | 'LOGIN_UNSUPPORTED'
+  | 'CHALLENGE_PENDING'
+  | 'CHALLENGE_EXPIRED'
+  | 'LOGIN_FAILED'
+  | 'LOGIN_UNAVAILABLE'
   | 'PROFILE_NOT_FOUND'
   | 'UPSTREAM_THROTTLED'
   | 'RATE_LIMITED'
@@ -32,17 +35,27 @@ export type ErrorCode =
   | 'UPSTREAM_ERROR'
   | 'INTERNAL';
 
+/**
+ * Mirrored from the server rather than imported: the server's copy lives in
+ * `linkedin/login.ts`, which type-imports Playwright, and dragging Playwright's
+ * types into the browser build to share four string literals is a bad trade.
+ */
+export type ChallengeKind = 'app-approval' | 'code' | 'captcha' | 'unknown';
+
 export interface ApiError {
   code: ErrorCode;
   message: string;
   hint?: string;
   retryAfterSeconds?: number;
+  /** Carries the sign-in handle on CHALLENGE_PENDING. */
+  details?: unknown;
 }
 
 export class ProfileApiError extends Error {
   readonly code: ErrorCode;
   readonly hint: string | undefined;
   readonly retryAfterSeconds: number | undefined;
+  readonly details: unknown;
 
   constructor(error: ApiError) {
     super(error.message);
@@ -50,6 +63,18 @@ export class ProfileApiError extends Error {
     this.code = error.code;
     this.hint = error.hint;
     this.retryAfterSeconds = error.retryAfterSeconds;
+    this.details = error.details;
+  }
+
+  /**
+   * The parked sign-in this error belongs to, when there is one. Narrowed here
+   * rather than at the call site so the unknown-shaped `details` is only picked
+   * apart in one place.
+   */
+  get challenge(): { handle?: string; challenge?: ChallengeKind } | undefined {
+    return this.details && typeof this.details === 'object'
+      ? (this.details as { handle?: string; challenge?: ChallengeKind })
+      : undefined;
   }
 }
 
@@ -61,9 +86,13 @@ export interface ServerStatus {
   breaker: string;
   tokensAvailable: number;
   credentialsConfigured: boolean;
-  authMode: 'cookie' | 'none';
+  authMode: 'cookie' | 'credentials' | 'none';
+  /** True once the server actually holds a cookie, not merely the means to get one. */
+  sessionReady: boolean;
   acceptsRequestCredentials: boolean;
+  passwordLoginAvailable: boolean;
   activeSessions: number;
+  activeLogins: number;
 }
 
 /**
@@ -88,9 +117,11 @@ export const apiKey = {
 };
 
 /**
- * A LinkedIn session the visitor supplies for their own lookups. Cookie only:
- * LinkedIn retired form-based sign-in, so the API rejects an email and password
- * with LOGIN_UNSUPPORTED.
+ * A LinkedIn session the visitor's lookups run as.
+ *
+ * Always a cookie by the time it is stored, whichever way it was obtained --
+ * signing in with an email and password ends with the server harvesting exactly
+ * this and handing it back, so the password is never held anywhere.
  */
 export interface LinkedInSession {
   liAt?: string;
@@ -189,4 +220,53 @@ export async function fetchProfile(
 
 export async function fetchStatus(): Promise<ServerStatus> {
   return parse<ServerStatus>(await fetch(`${API_BASE}/api/status`));
+}
+
+/**
+ * Signs in with an email and password.
+ *
+ * Resolves only when LinkedIn let the sign-in through. Anything that needs the
+ * person -- a tap in the LinkedIn app, a verification code -- arrives as a
+ * `ProfileApiError` with code `CHALLENGE_PENDING` and a handle on `.challenge`,
+ * which `verifySignIn` then drives to completion.
+ *
+ * The password is sent once and is never stored, here or on the server: what
+ * comes back is a cookie, and that is what every later lookup uses.
+ */
+export async function signIn(username: string, password: string): Promise<LinkedInSession> {
+  const res = await fetch(`${API_BASE}/api/auth/login`, {
+    method: 'POST',
+    headers: { ...authHeaders(), 'content-type': 'application/json' },
+    body: JSON.stringify({ username, password }),
+  });
+  const body = await parse<{ credentials: LinkedInSession }>(res);
+  return body.credentials;
+}
+
+/**
+ * Takes a parked sign-in one step further.
+ *
+ * With no code this polls the approval push; the server holds the request open
+ * for a few seconds before answering, so calling it in a loop costs one request
+ * every several seconds rather than a busy wait. With a code it submits it.
+ */
+export async function verifySignIn(handle: string, code?: string): Promise<LinkedInSession> {
+  const res = await fetch(`${API_BASE}/api/auth/verify`, {
+    method: 'POST',
+    headers: { ...authHeaders(), 'content-type': 'application/json' },
+    body: JSON.stringify({ handle, ...(code ? { code } : {}) }),
+  });
+  const body = await parse<{ credentials: LinkedInSession }>(res);
+  return body.credentials;
+}
+
+/** Releases the browser behind a sign-in the visitor walked away from. */
+export async function cancelSignIn(handle: string): Promise<void> {
+  await fetch(`${API_BASE}/api/auth/cancel`, {
+    method: 'POST',
+    headers: { ...authHeaders(), 'content-type': 'application/json' },
+    body: JSON.stringify({ handle }),
+  }).catch(() => {
+    /* a browser that outlives its handle is reaped by the server anyway */
+  });
 }

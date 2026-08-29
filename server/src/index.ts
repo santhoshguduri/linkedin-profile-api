@@ -29,7 +29,7 @@ const server = app.listen(config.PORT, config.HOST, () => {
 
   if (!config.hasCredentials) {
     log.warn(
-      'No LinkedIn session configured. This server has no identity of its own, so its own lookups return NOT_CONFIGURED; callers can still supply a cookie per request while ALLOW_REQUEST_CREDENTIALS is on. Set LI_AT to change that.',
+      'No LinkedIn session configured. This server has no identity of its own, so its own lookups return NOT_CONFIGURED; callers can still sign in at POST /api/auth/login or send a cookie per request while ALLOW_REQUEST_CREDENTIALS is on. Set LI_AT, or LI_USERNAME and LI_PASSWORD, to change that.',
     );
   }
 });

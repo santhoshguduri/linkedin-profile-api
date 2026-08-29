@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { AuthMode } from './linkedin/credentials.js';
 
 /** Treats "" as absent, so a commented-out .env line and a blank one behave identically. */
 const optionalStr = z
@@ -30,14 +31,37 @@ const EnvSchema = z.object({
   INBOUND_RPM: z.coerce.number().int().positive().default(30),
 
   /**
-   * A harvested browser session. This is the only way in: LinkedIn retired
-   * form-based sign-in, so email and password cannot be exchanged for a session
-   * by an HTTP client. JSESSIONID is optional but keeps the session stabler.
+   * A harvested browser session. The cheapest path in: no browser is launched
+   * and no verification is needed. JSESSIONID is optional but keeps it stabler.
    */
   LI_AT: optionalStr,
   LI_JSESSIONID: optionalStr,
   LI_BCOOKIE: optionalStr,
   LI_LIDC: optionalStr,
+
+  /**
+   * The deployment's own LinkedIn account. Used only when LI_AT is absent: the
+   * server signs in through a real browser and keeps the resulting cookie in
+   * memory. Expect a one-time approval prompt on the account owner's phone the
+   * first time a given host signs in, which is why LI_AT remains the better
+   * choice for an unattended deploy.
+   */
+  LI_USERNAME: optionalStr,
+  LI_PASSWORD: optionalStr,
+
+  /**
+   * Whether this deployment may launch Chromium to sign in. Off makes the API
+   * cookie-only, which is right for a host with no browser and no spare memory.
+   */
+  BROWSER_LOGIN: z.enum(['true', 'false']).default('true').transform((v) => v === 'true'),
+  /** Headful is for debugging a sign-in locally; a server has no display. */
+  BROWSER_HEADLESS: z.enum(['true', 'false']).default('true').transform((v) => v === 'true'),
+  /**
+   * How long one sign-in request may block waiting for a phone tap. Kept under
+   * the 30s that most platform proxies allow before they cut the connection;
+   * the caller polls for anything longer.
+   */
+  LOGIN_WAIT_MS: z.coerce.number().int().positive().max(60_000).default(20_000),
 
   PROXY_URL: optionalStr.refine((v) => v === undefined || /^https?:\/\//i.test(v), {
     message: 'PROXY_URL must be an http(s) URL',
@@ -55,7 +79,7 @@ export type Env = z.infer<typeof EnvSchema>;
 export interface Config extends Env {
   /** False when no session is configured: the server boots, but its own lookups return NOT_CONFIGURED. */
   readonly hasCredentials: boolean;
-  readonly authMode: 'cookie' | 'none';
+  readonly authMode: AuthMode;
   readonly authEnabled: boolean;
   readonly isProduction: boolean;
 }
@@ -71,12 +95,15 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): Config {
   const env = parsed.data;
   const jsession = env.LI_JSESSIONID?.replace(/^"|"$/g, '');
   const hasCookie = Boolean(env.LI_AT);
+  // A password is only a way in if this deployment is allowed to open a browser,
+  // so the two are reported as one fact rather than left for callers to combine.
+  const hasLogin = Boolean(env.LI_USERNAME && env.LI_PASSWORD && env.BROWSER_LOGIN);
 
   return {
     ...env,
     LI_JSESSIONID: jsession,
-    hasCredentials: hasCookie,
-    authMode: hasCookie ? 'cookie' : 'none',
+    hasCredentials: hasCookie || hasLogin,
+    authMode: hasCookie ? 'cookie' : hasLogin ? 'credentials' : 'none',
     authEnabled: Boolean(env.API_KEY),
     isProduction: env.NODE_ENV === 'production',
   };

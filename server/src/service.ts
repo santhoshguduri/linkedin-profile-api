@@ -13,6 +13,7 @@ import {
 } from './linkedin/credentials.js';
 import { extractProfile } from './linkedin/extract/index.js';
 import { parseProfileUrl } from './linkedin/url.js';
+import { LoginManager, EnvironmentLogin } from './linkedin/loginManager.js';
 import { TtlCache } from './util/cache.js';
 import { AppError } from './util/errors.js';
 import { ProfileResponseSchema, type ProfileResponse } from './schema/profile.js';
@@ -47,13 +48,35 @@ export class ProfileService {
    * would leak cookies between accounts.
    */
   readonly #pool = new Map<string, PooledSession>();
-  readonly #envSession: ResolvedSession;
+  /**
+   * The deployment's own identity. Not readonly: with LI_AT unset and
+   * LI_USERNAME/LI_PASSWORD set, it starts as "none" and is replaced by the
+   * cookie harvested from the first browser sign-in.
+   */
+  #envSession: ResolvedSession;
+  readonly #logins: LoginManager;
+  /** Absent unless this deployment was given an account to sign in with. */
+  readonly #envLogin: EnvironmentLogin | undefined;
 
   constructor(
     private readonly config: Config,
     private readonly log: Logger,
   ) {
     this.#envSession = sessionFromEnv(config);
+    this.#logins = new LoginManager(
+      {
+        enabled: config.BROWSER_LOGIN,
+        headless: config.BROWSER_HEADLESS,
+        navigationTimeoutMs: config.REQUEST_TIMEOUT_MS,
+        waitMs: config.LOGIN_WAIT_MS,
+        proxyUrl: config.PROXY_URL,
+      },
+      log,
+    );
+    this.#envLogin =
+      config.BROWSER_LOGIN && config.LI_USERNAME && config.LI_PASSWORD
+        ? new EnvironmentLogin(this.#logins, config.LI_USERNAME, config.LI_PASSWORD, log)
+        : undefined;
     this.#cache = new TtlCache<ProfileResponse>(
       config.CACHE_TTL_SECONDS * 1000,
       config.CACHE_MAX_ENTRIES,
@@ -67,29 +90,39 @@ export class ProfileService {
       inFlight: this.#inFlight.size,
       breaker: env?.breakerState ?? 'closed',
       tokensAvailable: Math.floor(env?.tokensAvailable ?? this.config.OUTBOUND_RPM),
-      credentialsConfigured: this.#envSession.mode !== 'none',
-      authMode: this.#envSession.mode,
+      credentialsConfigured: this.config.hasCredentials,
+      authMode: this.config.authMode,
+      /** True once a cookie is actually in hand, as opposed to merely obtainable. */
+      sessionReady: this.#envSession.mode !== 'none',
       acceptsRequestCredentials: this.config.ALLOW_REQUEST_CREDENTIALS,
+      passwordLoginAvailable: this.config.BROWSER_LOGIN,
       activeSessions: this.#pool.size,
+      activeLogins: this.#logins.activeLogins,
     };
+  }
+
+  /** The sign-in registry, for the auth routes. */
+  get logins(): LoginManager {
+    return this.#logins;
   }
 
   async close(): Promise<void> {
     await Promise.allSettled([...this.#pool.values()].map((entry) => entry.fetcher.close()));
     this.#pool.clear();
+    await this.#logins.close();
   }
 
   async getProfile(input: string, opts: LookupOptions = {}): Promise<ProfileResponse> {
     const { publicIdentifier: slug } = parseProfileUrl(input);
     const session = opts.credentials
       ? resolveSession(opts.credentials)
-      : this.#envSession;
+      : await this.#environmentSession();
 
     if (session.mode === 'none') {
       throw new AppError('NOT_CONFIGURED', 'No LinkedIn session is available for this request.', {
         hint: this.config.ALLOW_REQUEST_CREDENTIALS
-          ? 'Send your own session with the request: { "credentials": { "liAt": "<your li_at cookie>" } }.'
-          : 'This deployment does not accept a session on the request. Configure LI_AT on the server.',
+          ? 'Sign in at POST /api/auth/login, or send a cookie: { "credentials": { "liAt": "<your li_at>" } }.'
+          : 'This deployment does not accept a session on the request. Configure LI_AT or LI_USERNAME/LI_PASSWORD on the server.',
       });
     }
 
@@ -128,7 +161,16 @@ export class ProfileService {
   ): Promise<ProfileResponse> {
     const started = Date.now();
     const fetcher = this.#fetcherFor(session);
-    const result = await extractProfile(slug, fetcher, this.config, this.log);
+
+    let result;
+    try {
+      result = await extractProfile(slug, fetcher, this.config, this.log);
+    } catch (error) {
+      if (error instanceof AppError && error.code === 'SESSION_INVALID') {
+        this.#invalidateEnvironmentSession(session.key);
+      }
+      throw error;
+    }
 
     const response = ProfileResponseSchema.parse({
       profile: result.profile,
@@ -155,6 +197,36 @@ export class ProfileService {
       'profile extracted',
     );
     return response;
+  }
+
+  /**
+   * The deployment's own session, signing in first if that is what it takes.
+   *
+   * A cookie in LI_AT short-circuits this entirely. Only when there is no cookie
+   * and there are credentials does a browser get launched, and only once -- the
+   * harvested cookie is promoted to *be* the environment session, so the second
+   * request costs nothing and the account owner's phone stays quiet.
+   */
+  async #environmentSession(): Promise<ResolvedSession> {
+    if (this.#envSession.mode !== 'none') return this.#envSession;
+    if (!this.#envLogin) return this.#envSession;
+
+    const credentials = await this.#envLogin.credentials();
+    this.#envSession = resolveSession(credentials, true, 'credentials');
+    this.log.info({ session: this.#envSession.key }, 'environment session established by sign-in');
+    return this.#envSession;
+  }
+
+  /**
+   * Drops a harvested session that LinkedIn has since rejected, so the next
+   * request signs in again instead of retrying a dead cookie forever. A cookie
+   * that came from LI_AT is left alone: re-signing-in cannot fix an env var.
+   */
+  #invalidateEnvironmentSession(key: string): void {
+    if (!this.#envLogin || this.#envSession.key !== key) return;
+    this.#pool.delete(key);
+    this.#envSession = { credentials: {}, mode: 'none', key: 'none', fromEnvironment: true };
+    this.log.warn('harvested session rejected by LinkedIn; will sign in again');
   }
 
   /** Returns the pooled fetcher for an identity, creating it on first use. */

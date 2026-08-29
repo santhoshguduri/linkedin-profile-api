@@ -15,6 +15,7 @@ import { AppError } from './util/errors.js';
 import { ProfileService } from './service.js';
 import { requireApiKey } from './middleware/auth.js';
 import { errorHandler, notFound } from './middleware/errorHandler.js';
+import { authRouter } from './routes/auth.js';
 import { profileRouter } from './routes/profile.js';
 import { systemRouter } from './routes/system.js';
 
@@ -88,6 +89,33 @@ export function createApp(config: Config, log: Logger): App {
   );
 
   app.use(systemRouter(service, VERSION));
+
+  /**
+   * Sign-in is limited far harder than lookups, and by IP rather than by key.
+   * Each attempt drives a real browser against LinkedIn's login, so a loose
+   * limit here is both a brute-force channel and the fastest way to get the
+   * host's IP flagged. Ten a minute is generous for a human and useless to a
+   * script.
+   */
+  app.use(
+    '/api/auth',
+    rateLimit({
+      windowMs: 60_000,
+      limit: 10,
+      standardHeaders: 'draft-8',
+      legacyHeaders: false,
+      handler: (_req, _res, next) => {
+        next(
+          new AppError('RATE_LIMITED', 'Too many sign-in attempts. Wait a minute and try again.', {
+            retryAfterSeconds: 60,
+          }),
+        );
+      },
+    }),
+    requireApiKey(config),
+    authRouter(service, config),
+  );
+
   app.use('/api/profile', requireApiKey(config), profileRouter(service, config));
 
   app.use(notFound);

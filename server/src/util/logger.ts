@@ -15,6 +15,12 @@ export const REDACT_PATHS = [
   'req.headers["x-li-username"]',
   'req.headers["x-li-password"]',
   'req.body.credentials',
+  // /api/auth/login carries these at the top level of the body, so the
+  // credentials path above does not cover them.
+  'req.body.username',
+  'req.body.password',
+  'req.body.handle',
+  'req.body.code',
   'res.headers["set-cookie"]',
   'headers.cookie',
   'headers["set-cookie"]',
@@ -29,6 +35,8 @@ export const REDACT_PATHS = [
   'apiKey',
   'password',
   'session_password',
+  'username',
+  'handle',
   'credentials',
   '*.cookie',
   '*.csrfToken',

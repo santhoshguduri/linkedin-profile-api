@@ -15,6 +15,10 @@ export function systemRouter(service: ProfileService, version: string): Router {
       endpoints: {
         'GET /api/profile?url=': 'Extract a profile. Add &refresh=true to bypass the cache.',
         'POST /api/profile': 'Same, with { url, refresh } in a JSON body.',
+        'POST /api/auth/login': 'Sign in with a LinkedIn email and password.',
+        'POST /api/auth/verify':
+          'Finish a sign-in: poll the approval sent to the LinkedIn app, or submit a code.',
+        'POST /api/auth/cancel': 'Abandon a sign-in that is waiting on verification.',
         'GET /api/status': 'Cache, rate limit and session state.',
         'GET /health': 'Liveness probe.',
       },
