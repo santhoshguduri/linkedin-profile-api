@@ -1,0 +1,12 @@
+{
+  // The serverless entrypoint sits outside src/, so the main project -- which is
+  // rooted at src/ and emits to dist/ for the container build -- does not see it.
+  // This one type-checks it against the same settings without emitting anything,
+  // so `api/index.ts` cannot rot while nobody is compiling it.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "noEmit": true
+  },
+  "include": ["api/**/*.ts", "src/**/*.ts"]
+}
