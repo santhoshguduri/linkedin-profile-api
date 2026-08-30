@@ -1,16 +1,22 @@
-# Render blueprint. Kept alongside the Fly and Railway configs so the API is not
-# tied to one platform -- it is a plain Node server with no native dependencies.
+# Render blueprint. New > Blueprint, point it at the repo, and it reads this.
+#
+# Docker, not Render's node runtime. The node runtime gives you Node and an npm
+# install and nothing else, so Chromium has no binary and none of the ~90 shared
+# libraries it links against -- every lookup then fails with LOGIN_UNAVAILABLE,
+# which is exactly the failure this file used to cause. The browser is not
+# optional here: everything below a profile's top card is fetched by LinkedIn's
+# own runtime after load, so nothing renders it, nothing extracts it.
 #
 # Secrets are marked sync:false, which makes Render prompt for them in the
 # dashboard instead of reading them from this file. Nothing secret is committed.
 services:
   - type: web
     name: linkedin-profile-api
-    runtime: node
+    runtime: docker
+    repo: https://github.com/santhoshguduri/linkedin-profile-api
     rootDir: server
+    dockerfilePath: ./Dockerfile
     plan: free
-    buildCommand: npm ci && npm run build
-    startCommand: npm start
     healthCheckPath: /health
     envVars:
       - key: NODE_ENV
@@ -21,13 +27,17 @@ services:
         value: "30"
       - key: ALLOW_REQUEST_CREDENTIALS
         value: "true"
+      # Render's free instance is 512 MB. Chromium fits with room to spare for a
+      # single render; a long profile is the case that gets close to the edge.
+      - key: RENDER_PROFILES
+        value: "true"
+      - key: RENDER_TIMEOUT_MS
+        value: "45000"
       - key: CORS_ORIGIN
         sync: false
       - key: LI_AT
         sync: false
       - key: LI_JSESSIONID
-        sync: false
-      - key: API_KEY
         sync: false
       - key: PROXY_URL
         sync: false
