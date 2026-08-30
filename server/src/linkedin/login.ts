@@ -45,7 +45,7 @@ export const CHALLENGE_MESSAGES: Record<ChallengeKind, string> = {
   captcha:
     'LinkedIn served a CAPTCHA, which cannot be solved unattended. Sign in from your own browser once to clear it, then try again.',
   unknown:
-    'LinkedIn interrupted the sign-in with a verification step this API does not recognise. Sign in from your own browser to clear it.',
+    'LinkedIn asked for an extra verification step. If your phone or email has a request from LinkedIn, approve it; this stays open while you do.',
 };
 
 /**
@@ -114,12 +114,33 @@ export function credentialErrorFrom(text: string): string | undefined {
   return undefined;
 }
 
+/**
+ * Whether a pathname is still one of LinkedIn sign-in pages.
+ *
+ * Exported only so it can be tested, and it earned that. The word-boundary
+ * anchor was once written as a bare backslash-b through a shell heredoc and
+ * reached this file as a literal backspace byte, making the pattern match
+ * nothing. Every pathname then looked like it had already left the login page,
+ * so the wait loop returned on its first pass and judged the sign-in before
+ * LinkedIn had answered -- which surfaced as "did not sign in and did not say
+ * why" on a perfectly good password.
+ */
+export function isOnLoginPath(pathname: string): boolean {
+  return /^\/(login|uas)(\b|$)/.test(pathname);
+}
+
 export interface BrowserLoginOptions {
   headless: boolean;
   /** Ceiling on any single navigation. Kept well under the HTTP request budget. */
   navigationTimeoutMs: number;
   proxyUrl?: string | undefined;
   userAgent?: string | undefined;
+  /**
+   * Where to dump the rendered page when a sign-in does not end in a cookie.
+   * Unset in normal operation: these captures show a half-authenticated page and
+   * the text can carry tokens, so they are opt-in and land in a gitignored dir.
+   */
+  debugDir?: string | undefined;
 }
 
 /**
@@ -232,6 +253,9 @@ export class BrowserLogin {
     }
 
     const userAgent = options.userAgent ?? DEFAULT_USER_AGENT;
+    // Pin it back onto the options so `harvest()` reports the UA this browser
+    // really used, not whatever the default happens to be when it is read.
+    options = { ...options, userAgent };
     let browser: Browser;
     try {
       browser = await chromium.launch({
@@ -307,19 +331,58 @@ export class BrowserLogin {
    *
    * Not `waitForLoadState('networkidle')`: LinkedIn holds long-poll connections
    * open indefinitely, so networkidle never fires and waiting for it burns the
-   * entire timeout on every single sign-in. Instead this watches for the three
+   * entire timeout on every single sign-in. Instead this watches for the four
    * things that actually mean "done" -- a cookie appeared, the URL left the
-   * login page, or the page is complaining about the credentials -- and returns
-   * the moment any of them is true.
+   * login page, the page is complaining about the credentials, or the password
+   * field was swapped out for the next step -- and returns the moment any of
+   * them is true.
    */
-  async #settle(budgetMs = 15_000): Promise<void> {
+  async #settle(budgetMs = 20_000): Promise<void> {
     const deadline = Date.now() + budgetMs;
     while (Date.now() < deadline) {
       if (await this.harvest()) return;
-      if (!/\/(login|uas)/.test(new URL(this.page.url()).pathname)) return;
+      if (!isOnLoginPath(new URL(this.page.url()).pathname)) return;
       const text = await this.page.locator('body').innerText().catch(() => '');
       if (credentialErrorFrom(text)) return;
+
+      // The password field going away means LinkedIn accepted it and swapped in the
+      // next step -- which it can do without navigating, so watching the URL alone
+      // would sit here for the whole budget with the answer already on screen.
+      if (!(await firstVisible(this.page, PASSWORD_CANDIDATES, 250))) {
+        await this.#awaitChallengeScreen();
+        return;
+      }
       await this.page.waitForTimeout(500);
+    }
+  }
+
+  /**
+   * Waits for the screen that replaced the password form to say what it wants.
+   *
+   * The password field vanishes the instant LinkedIn accepts the password, but
+   * the screen it swaps in is rendered by the SDUI runtime a beat later. Reading
+   * the page at that exact moment finds an empty body, `classifyChallenge` has
+   * nothing to match on and answers `unknown` -- and an unrecognised challenge
+   * used to end the sign-in outright. So a perfectly ordinary two-factor login
+   * failed about five seconds in, with a message saying the verification step
+   * was not recognised, while the approval push was still on its way to the
+   * phone.
+   *
+   * Bounded and best-effort: if the screen is still illegible when the budget
+   * runs out, the sign-in is parked as `unknown` and waited on anyway rather
+   * than abandoned. The budget is small for that reason -- and because it is
+   * spent inside the same HTTP request as the first approval wait, which has to
+   * stay under the ~30s most platform proxies allow.
+   */
+  async #awaitChallengeScreen(budgetMs = 6_000): Promise<void> {
+    const deadline = Date.now() + budgetMs;
+    while (Date.now() < deadline) {
+      // A cookie means the challenge resolved itself while we were looking.
+      if (await this.harvest()) return;
+      const text = await this.page.locator('body').innerText().catch(() => '');
+      if (classifyChallenge(this.page.url(), text) !== 'unknown') return;
+      if (await firstVisible(this.page, CODE_CANDIDATES, 250)) return;
+      await this.page.waitForTimeout(400);
     }
   }
 
@@ -342,15 +405,68 @@ export class BrowserLogin {
 
     const hasCodeInput = Boolean(await firstVisible(this.page, CODE_CANDIDATES, 750));
 
-    if (/checkpoint|challenge/i.test(url) || hasCodeInput) {
+    /**
+     * Whether the password was accepted, decided by the password field rather
+     * than by the address bar.
+     *
+     * This is the crux of the whole flow. The old check gated on the URL
+     * containing "checkpoint" -- but LinkedIn's SDUI login swaps the approval
+     * screen in *without navigating*, so the URL can still read /login while
+     * the phone is already buzzing. An app-approval screen also has no input to
+     * find. So neither gate fired, and a perfectly normal two-factor sign-in was
+     * reported as "did not sign in and did not say why".
+     *
+     * The password field vanishing is the reliable signal: LinkedIn only takes
+     * it off screen once it has accepted it and moved to the next step. If it is
+     * still there, nothing was accepted.
+     */
+    const passwordGone = !(await firstVisible(this.page, PASSWORD_CANDIDATES, 500));
+    const onCheckpointUrl = /checkpoint|challenge|verif/i.test(url);
+
+    if (onCheckpointUrl || hasCodeInput || passwordGone) {
       const kind = classifyChallenge(url, text, hasCodeInput);
+      await this.#capture(`challenge-${kind}`);
       return { status: 'challenge', kind, message: CHALLENGE_MESSAGES[kind] };
     }
 
+    // Password field still on screen and LinkedIn is not complaining: the click
+    // never took effect. Says so plainly rather than blaming the credentials,
+    // because the credentials are the one thing this case rules out.
+    await this.#capture('no-progress');
     return {
       status: 'failed',
-      message: 'LinkedIn did not sign in and did not say why. Try again, or use a cookie.',
+      message:
+        'LinkedIn did not move past the sign-in form. The password was not rejected -- the form simply did not submit, which usually means LinkedIn changed its login markup.',
     };
+  }
+
+  /**
+   * Writes what LinkedIn actually showed to disk, when a debug directory is set.
+   *
+   * A sign-in that stalls is close to undiagnosable from an error string alone:
+   * the useful information is the rendered page, and it is gone the moment the
+   * browser closes. Off unless LOGIN_DEBUG_DIR is set, because these captures
+   * are session-bearing -- the screenshot shows a signed-in-adjacent page and
+   * the HTML can carry tokens.
+   */
+  async #capture(reason: string): Promise<void> {
+    const dir = this.options.debugDir;
+    if (!dir) return;
+    try {
+      const { mkdir, writeFile } = await import('node:fs/promises');
+      const { join } = await import('node:path');
+      await mkdir(dir, { recursive: true });
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const base = join(dir, `${stamp}-${reason}`);
+      const text = await this.page.locator('body').innerText().catch(() => '');
+      await writeFile(`${base}.txt`, `url: ${this.page.url()}
+
+${text}
+`, 'utf8');
+      await this.page.screenshot({ path: `${base}.png`, fullPage: true });
+    } catch {
+      /* diagnostics must never break a sign-in */
+    }
   }
 
   /**
@@ -413,6 +529,14 @@ export class BrowserLogin {
     if (!liAt) return undefined;
 
     const jsessionId = cookies.find((c) => c.name === 'JSESSIONID')?.value?.replace(/^"|"$/g, '');
-    return { liAt, ...(jsessionId ? { jsessionId } : {}) };
+    // The UA travels with the cookie. LinkedIn issued this session to *this*
+    // browser, and later lookups replay it over plain HTTP -- if those requests
+    // announce a different client than the one that signed in, the mismatch is
+    // visible to LinkedIn and is a cheap reason to invalidate the session.
+    return {
+      liAt,
+      ...(jsessionId ? { jsessionId } : {}),
+      userAgent: this.options.userAgent ?? DEFAULT_USER_AGENT,
+    };
   }
 }

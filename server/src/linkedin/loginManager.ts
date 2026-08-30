@@ -19,6 +19,21 @@ import { BrowserLogin, type ChallengeKind, type LoginOutcome } from './login.js'
 
 /** A parked sign-in is abandoned after this long. Chromium is too expensive to leak. */
 const PENDING_TTL_MS = 5 * 60_000;
+
+/**
+ * Challenges that are resolved by waiting rather than by typing.
+ *
+ * `unknown` is in here deliberately. It means LinkedIn showed a screen this API
+ * could not name -- which is not the same as a screen nobody can clear, and in
+ * practice is usually an approval prompt worded in a way the classifier has not
+ * seen. Treating it as terminal closed the browser and failed the sign-in within
+ * seconds, while the person was still reaching for their phone. Waiting on it
+ * costs one parked browser and is right far more often than it is wrong.
+ */
+const WAITABLE: ReadonlySet<ChallengeKind> = new Set(['app-approval', 'unknown']);
+
+/** Exported for the tests: the rule above is the one that decides fail-vs-wait. */
+export const isWaitableChallenge = (kind: ChallengeKind): boolean => WAITABLE.has(kind);
 /** Ceiling on concurrent browsers. Each one costs roughly 100 MB of RSS. */
 const MAX_PENDING = 4;
 
@@ -38,6 +53,7 @@ export interface LoginManagerOptions {
   /** How long a single poll may block before answering "still waiting". */
   waitMs: number;
   proxyUrl?: string | undefined;
+  debugDir?: string | undefined;
   enabled: boolean;
 }
 
@@ -82,6 +98,7 @@ export class LoginManager {
       headless: this.options.headless,
       navigationTimeoutMs: this.options.navigationTimeoutMs,
       proxyUrl: this.options.proxyUrl,
+      debugDir: this.options.debugDir,
     });
 
     let outcome: LoginOutcome;
@@ -89,7 +106,7 @@ export class LoginManager {
       outcome = await login.signIn(username, password);
       // An approval push often lands while the request is still open, so the
       // first wait is spent here rather than making the caller poll for it.
-      if (outcome.status === 'challenge' && outcome.kind === 'app-approval') {
+      if (outcome.status === 'challenge' && WAITABLE.has(outcome.kind)) {
         outcome = await login.waitForApproval(this.options.waitMs);
       }
     } catch (error) {
@@ -152,10 +169,11 @@ export class LoginManager {
   /**
    * Decides whether a browser is still worth holding.
    *
-   * Only `app-approval` and `code` are resumable: they are the two states a
-   * person can actually clear from where they are standing. A CAPTCHA cannot be
-   * answered through this API at all, so parking that browser would hold 100 MB
-   * open for a handle nobody can ever use.
+   * Everything a person can clear from where they are standing is resumable: an
+   * approval they can tap, a code they can type, and an unrecognised screen that
+   * may well be either. A CAPTCHA is the one exception -- it cannot be answered
+   * through this API at all, so parking that browser would hold 100 MB open for
+   * a handle nobody can ever use.
    */
   async #settle(
     login: BrowserLogin,
@@ -163,7 +181,7 @@ export class LoginManager {
     reuseHandle?: string,
   ): Promise<LoginProgress> {
     const resumable =
-      outcome.status === 'challenge' && (outcome.kind === 'app-approval' || outcome.kind === 'code');
+      outcome.status === 'challenge' && (WAITABLE.has(outcome.kind) || outcome.kind === 'code');
 
     if (!resumable) {
       await login.close();
