@@ -40,15 +40,31 @@ const LAUNCH_ARGS = [
   '--disable-blink-features=AutomationControlled',
   '--disable-dev-shm-usage',
   '--no-sandbox',
+  // The rest are about fitting in a small instance. Site isolation gives every
+  // cross-origin frame on the page its own renderer, and a profile carries
+  // several; on a 512 MB box that is the difference between rendering and being
+  // killed. Nothing here defends against a hostile origin, which is not a threat
+  // this container faces -- it loads one site, on purpose, and then exits.
+  '--renderer-process-limit=1',
+  '--disable-features=site-per-process,TranslateUI',
+  '--disable-gpu',
+  '--disable-extensions',
+  '--disable-background-networking',
 ];
 
 /**
- * Trimmed to what a lazy section needs to render. Images and fonts are the bulk
- * of a profile's bytes and none of its text; blocking them cuts render time
- * roughly in half. `img` is deliberately *not* blocked -- profile and company
- * logos are part of the response contract, and we need their URLs from the DOM.
+ * Trimmed to what a lazy section needs to render: the text and the SDUI calls
+ * that fetch more of it. Everything here is bytes without content.
+ *
+ * Images are blocked too, which an earlier version of this file argued against
+ * on the grounds that photo and logo URLs are part of the response contract.
+ * They are, but they are read off `src` and `srcset` in the DOM, and aborting a
+ * request does not disturb the attribute that asked for it -- only the download
+ * and the decoded bitmap go away. Scrolling a profile to its end pulls in a
+ * banner and a logo per role, per school and per certificate, then does it again
+ * on every details page, and decoded bitmaps are what makes that expensive.
  */
-const BLOCKED_RESOURCES = new Set(['font', 'media', 'stylesheet']);
+const BLOCKED_RESOURCES = new Set(['font', 'media', 'stylesheet', 'image']);
 
 let shared: Browser | null = null;
 let idleTimer: NodeJS.Timeout | null = null;
