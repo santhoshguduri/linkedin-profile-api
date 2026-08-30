@@ -8,6 +8,7 @@ import { JsonView } from './components/JsonView';
 import { ErrorPanel } from './components/ErrorPanel';
 import { Skeleton } from './components/Skeleton';
 import { SettingsDialog } from './components/SettingsDialog';
+import { ConnectGate } from './components/ConnectGate';
 
 type Tab = 'profile' | 'json';
 
@@ -27,8 +28,12 @@ export function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [status, setStatus] = useState<ServerStatus | null>(null);
   const [note, setNote] = useState<string>('');
-  /** Bumped on save so the footer reflects a session the visitor just entered. */
+  /** Bumped when the session changes, so the gate and footer re-read it. */
   const [sessionRevision, setSessionRevision] = useState(0);
+  /** Guards the ?url= autorun so it fires once, not on every status refresh. */
+  const [autoRan, setAutoRan] = useState(false);
+  /** Distinguishes "still asking the server" from "asked, and it is down". */
+  const [checkedOnce, setCheckedOnce] = useState(false);
 
   const { state, run } = useProfileLookup();
 
@@ -39,24 +44,41 @@ export function App() {
     [run, refresh],
   );
 
-  // A ?url= in the address bar runs on load, so a result can be shared as a link.
+  // Re-read on every lookup and after Settings saves, so connecting immediately
+  // opens the search rather than needing a reload.
   useEffect(() => {
-    if (initialUrl) void run(initialUrl, false);
-    // Intentionally once, on mount.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // Surface deployment state up front: a server with no session should say so
-  // before the user spends a request finding out.
-  useEffect(() => {
+    let live = true;
     fetchStatus()
-      .then(setStatus)
-      .catch(() => setStatus(null));
-  }, [state.status]);
+      .then((next) => live && setStatus(next))
+      .catch(() => live && setStatus(null))
+      .finally(() => live && setCheckedOnce(true));
+    return () => {
+      live = false;
+    };
+  }, [state.status, sessionRevision]);
 
   const result = state.status === 'success' ? state.data : null;
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const ownSession = useMemo(() => linkedInSession.get() !== null, [sessionRevision]);
+
+  /**
+   * A session exists, from either side.
+   *
+   * `sessionReady` rather than `credentialsConfigured`: a server holding only an
+   * email and password has the means to sign in but not a session yet, and that
+   * sign-in can stop for a phone approval. Treating it as connected would put
+   * the visitor back in the failure this gate exists to prevent.
+   */
+  const connected = ownSession || status?.sessionReady === true;
+  const checking = status === null && !ownSession && !checkedOnce;
+
+  // A ?url= in the address bar runs on load, so a result can be shared as a
+  // link -- but only once there is a session to run it with.
+  useEffect(() => {
+    if (!initialUrl || autoRan || !connected) return;
+    setAutoRan(true);
+    void run(initialUrl, false);
+  }, [initialUrl, autoRan, connected, run]);
 
   const copy = async () => {
     if (!result) return;
@@ -99,6 +121,14 @@ export function App() {
       </header>
 
       <main>
+        {!connected ? (
+          <ConnectGate
+            checking={checking}
+            serverOffline={status === null && checkedOnce}
+            onConnect={() => setSettingsOpen(true)}
+          />
+        ) : (
+          <>
         <SearchBar
           url={url}
           onUrlChange={setUrl}
@@ -122,7 +152,7 @@ export function App() {
           />
         )}
 
-        {state.status === 'loading' && <Skeleton />}
+        {state.status === 'loading' && <Skeleton stage={state.stage} />}
 
         {state.status === 'idle' && (
           <section className="empty">
@@ -177,6 +207,8 @@ export function App() {
             )}
           </section>
         )}
+          </>
+        )}
       </main>
 
       <footer>
@@ -190,11 +222,13 @@ export function App() {
 
       <SettingsDialog
         open={settingsOpen}
-        onClose={(saved) => {
+        onClose={(changed) => {
           setSettingsOpen(false);
-          if (saved) {
+          // Covers connecting and disconnecting alike -- both change which
+          // session the next lookup runs as, and both need the gate re-read.
+          if (changed) {
             setSessionRevision((n) => n + 1);
-            setNote('Settings saved for this tab');
+            setNote(linkedInSession.get() ? 'LinkedIn connected for this tab' : 'LinkedIn disconnected');
           }
         }}
       />

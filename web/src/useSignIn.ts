@@ -23,7 +23,15 @@ import {
 export type SignInState =
   | { phase: 'idle' }
   | { phase: 'working' }
-  | { phase: 'challenge'; kind: ChallengeKind; handle: string; message: string; busy: boolean }
+  | {
+      phase: 'challenge';
+      kind: ChallengeKind;
+      handle: string;
+      message: string;
+      busy: boolean;
+      /** When the wait began, so the UI can show that it is still live. */
+      since: number;
+    }
   | { phase: 'error'; message: string; hint?: string | undefined };
 
 export function useSignIn(onSuccess: (session: LinkedInSession) => void) {
@@ -48,13 +56,16 @@ export function useSignIn(onSuccess: (session: LinkedInSession) => void) {
       if (error instanceof ProfileApiError && error.code === 'CHALLENGE_PENDING') {
         const handle = error.challenge?.handle;
         if (handle) {
-          setState({
+          setState((prev) => ({
             phase: 'challenge',
             kind: error.challenge?.challenge ?? 'unknown',
             handle,
             message: error.message,
             busy: false,
-          });
+            // Kept across polls: each one comes back as another CHALLENGE_PENDING,
+            // and restarting the clock every time would peg it at zero.
+            since: prev.phase === 'challenge' ? prev.since : Date.now(),
+          }));
           return;
         }
       }
@@ -107,21 +118,37 @@ export function useSignIn(onSuccess: (session: LinkedInSession) => void) {
    * Polls an approval for as long as one is outstanding. The server holds each
    * call open for several seconds before answering, so this is a handful of
    * requests per minute, not a spin.
+   *
+   * `unknown` is polled alongside `app-approval`. It means LinkedIn showed a
+   * screen the server could not classify, which in practice is usually an
+   * approval prompt worded in a way the classifier has not seen -- and the tap
+   * resolves it either way. Only a code challenge sits still here, because that
+   * one genuinely needs somebody to type something.
    */
   useEffect(() => {
-    if (state.phase !== 'challenge' || state.kind !== 'app-approval') return;
+    if (state.phase !== 'challenge' || state.kind === 'code') return;
     let cancelled = false;
     const handle = state.handle;
 
     void (async () => {
       while (!cancelled) {
+        const startedAt = Date.now();
         try {
           const session = await verifySignIn(handle);
           if (!cancelled) succeed(session);
           return;
         } catch (error) {
           // Still waiting is the expected answer, so it is the only one that loops.
-          if (error instanceof ProfileApiError && error.code === 'CHALLENGE_PENDING') continue;
+          if (error instanceof ProfileApiError && error.code === 'CHALLENGE_PENDING') {
+            // The server normally holds each poll open for ~20s. If one comes back
+            // much faster -- a proxy cutting it short, say -- this backs off rather
+            // than turning a five-minute wait into a request flood.
+            const elapsed = Date.now() - startedAt;
+            if (elapsed < 2_000) {
+              await new Promise((resolve) => setTimeout(resolve, 2_000 - elapsed));
+            }
+            continue;
+          }
           if (!cancelled) settle(error);
           return;
         }

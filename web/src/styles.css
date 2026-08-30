@@ -437,7 +437,6 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.65); backdrop-filter: blur(3px); 
 }
 
 .settings-form input:focus { outline: none; border-color: var(--accent); }
-.settings-form menu { display: flex; justify-content: flex-end; gap: 0.5rem; margin: 1.1rem 0 0; padding: 0; }
 .settings-form .primary { background: var(--accent); color: #fff; padding: 0.45rem 1.1rem; font-size: 0.85rem; }
 .settings-form .primary:hover { background: #5f9aff; }
 
@@ -463,7 +462,6 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.65); backdrop-filter: blur(3px); 
   margin-bottom: 0.15rem;
 }
 
-.settings-form hr { border: none; border-top: 1px solid var(--border); margin: 1.4rem 0 1.1rem; }
 .settings-form input + input { margin-top: 0.5rem; }
 .settings-form .note { margin: 0.6rem 0 0; font-size: 0.78rem; line-height: 1.45; }
 .settings-form .note.warn { color: var(--warn); }
@@ -495,27 +493,6 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.65); backdrop-filter: blur(3px); 
   font-weight: 500;
   white-space: nowrap;
 }
-.badge--ok {
-  background: rgba(74, 222, 128, 0.12);
-  color: var(--ok);
-}
-
-.connect-steps {
-  margin: 0 0 0.75rem;
-  padding-left: 1.15rem;
-  font-size: 0.85rem;
-  line-height: 1.6;
-  color: var(--text-dim);
-}
-.connect-steps li + li { margin-top: 0.35rem; }
-.connect-steps code {
-  font-family: var(--mono);
-  font-size: 0.78em;
-  padding: 0.05rem 0.3rem;
-  border-radius: 4px;
-  background: var(--surface-2);
-}
-
 .manual {
   margin-top: 1rem;
   border: 1px solid var(--border-soft);
@@ -582,3 +559,141 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.65); backdrop-filter: blur(3px); 
   font-size: 0.83rem;
 }
 .settings-form .error .note { display: block; margin-top: 0.3rem; }
+
+/* ---------- connect gate ---------- */
+/* Reuses .empty for layout: it is the same "nothing here yet" shape, one step
+   earlier in the flow. */
+.connect-gate p { max-width: 34rem; margin: 0 auto; }
+.connect-gate .primary {
+  margin-top: 1.2rem;
+  background: var(--accent);
+  color: #fff;
+  padding: 0.5rem 1.3rem;
+  font-size: 0.9rem;
+}
+.connect-gate .primary:hover { background: #5f9aff; }
+.connect-gate .note { margin-top: 1.1rem; font-size: 0.78rem; color: var(--text-faint); }
+.empty code {
+  font-family: var(--mono);
+  font-size: 0.85em;
+  padding: 0.05rem 0.3rem;
+  border-radius: 4px;
+  background: var(--surface-2);
+}
+/* The shared .spinner is button-sized; standing on its own it needs to read as
+   a page-level wait. */
+.empty .spinner {
+  width: 26px; height: 26px;
+  border-width: 3px;
+  border-color: var(--border);
+  border-top-color: var(--accent);
+  margin: 0 auto 0.9rem;
+}
+
+/* ---------- progress steps ---------- */
+.progress { padding: 1.1rem 1.3rem; }
+.progress-steps { list-style: none; margin: 0; padding: 0; }
+.progress-step {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  font-size: 0.88rem;
+  padding: 0.3rem 0;
+  color: var(--text-faint);
+  transition: color 0.2s;
+}
+.progress-dot {
+  flex: none;
+  width: 20px; height: 20px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  display: grid;
+  place-items: center;
+  font-size: 0.7rem;
+  font-family: var(--mono);
+  line-height: 1;
+}
+.progress-step.done { color: var(--text-dim); }
+.progress-step.done .progress-dot {
+  background: rgba(74, 222, 128, 0.12);
+  border-color: rgba(74, 222, 128, 0.35);
+  color: var(--ok);
+}
+.progress-step.active { color: var(--text); }
+.progress-step.active .progress-dot {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
+  /* The only moving part in the list, so the eye lands on the current step
+     without needing to read the whole thing. */
+  animation: pulse 1.4s ease-in-out infinite;
+}
+@keyframes pulse { 50% { box-shadow: 0 0 0 4px var(--accent-soft); } }
+.progress-detail {
+  margin: 0.8rem 0 0;
+  padding-left: 1.9rem;
+  font-size: 0.8rem;
+  color: var(--text-faint);
+}
+
+/* ---------- verification challenge ---------- */
+.approval-steps {
+  margin: 0 0 0.9rem;
+  padding-left: 1.15rem;
+  font-size: 0.85rem;
+  line-height: 1.6;
+  color: var(--text-dim);
+}
+.approval-steps li + li { margin-top: 0.3rem; }
+.approval-steps strong { color: var(--text); font-weight: 500; }
+
+.waiting {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  margin: 0 0 0.6rem !important;
+  font-size: 0.85rem;
+  color: var(--text-dim) !important;
+  /* Monospaced digits so the ticking counter does not shuffle the line. */
+  font-variant-numeric: tabular-nums;
+}
+.waiting .spinner {
+  flex: none;
+  border-color: var(--border);
+  border-top-color: var(--accent);
+}
+
+.code-label { margin: 0.9rem 0 0.45rem !important; }
+.challenge .note { color: var(--text-faint) !important; }
+
+/* ---------- dialog chrome ---------- */
+/* The dialog has no Save/Cancel footer, so dismissal lives in the header. */
+.dialog-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+}
+.settings-form .dialog-head h2 { margin: 0 0 1rem; }
+.icon-button {
+  background: transparent;
+  border: none;
+  color: var(--text-faint);
+  font-size: 1.5rem;
+  line-height: 1;
+  padding: 0 0.25rem;
+  margin: -0.25rem -0.25rem 0 0;
+}
+.icon-button:hover { color: var(--text); }
+
+.ghost.small { padding: 0.15rem 0.5rem; font-size: 0.75rem; }
+
+.manual-save {
+  margin-top: 0.9rem;
+  background: var(--accent);
+  color: #fff;
+  padding: 0.4rem 1rem;
+  font-size: 0.85rem;
+}
+.manual-save:hover:not(:disabled) { background: #5f9aff; }
+.manual-save:disabled { opacity: 0.45; cursor: not-allowed; }

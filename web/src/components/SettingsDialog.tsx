@@ -1,63 +1,83 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { apiKey, linkedInSession, type LinkedInSession } from '../api';
+import { linkedInSession, type LinkedInSession } from '../api';
 import { onExtensionSession } from '../extensionBridge';
 import { useSignIn } from '../useSignIn';
+import { ChallengePanel } from './ChallengePanel';
 
-const EMPTY = { liAt: '', jsessionId: '', cookie: '' };
+const EMPTY = { liAt: '', jsessionId: '', cookie: '', userAgent: '' };
 
 /**
- * Collects the two things the API may need from the visitor: an optional API key
- * for this deployment, and a LinkedIn session to run lookups as.
+ * Collects the LinkedIn session that lookups run as.
  *
- * Three ways to hand over a session, in descending order of how much the visitor
- * has to understand:
+ * Two ways to hand one over:
  *
  *   1. Email and password. The server drives a real browser through LinkedIn's
  *      sign-in, waits out whatever verification LinkedIn asks for, and keeps
  *      only the resulting cookie.
- *   2. The companion extension, which lifts the cookie from a browser already
- *      signed in. Nothing to type and no verification, because the sign-in
- *      already happened.
- *   3. Pasting the cookie, for anyone who would rather not do either.
+ *   2. Pasting a cookie header, for anyone already signed in elsewhere who would
+ *      rather not type a password here.
  *
- * All three end in the same place: a `li_at` cookie held in this tab and sent
- * with each lookup. The password is used once and kept nowhere.
+ * Both end in the same place: a `li_at` cookie held in this tab and sent with
+ * each lookup. The password is used once and kept nowhere.
+ *
+ * There is no Save button, and that is the point. A sign-in that succeeded has
+ * nothing left to confirm -- the session is already in hand -- so a Save step
+ * only stood between it and the search box, and a Cancel next to it invited
+ * throwing away a sign-in that had already happened. A session arriving closes
+ * the dialog. The only buttons left are the ones that start something.
+ *
+ * The companion extension still pushes a session if it is installed -- the
+ * listener below is unconditional -- it is simply no longer advertised here.
  */
 export function SettingsDialog({
   open,
   onClose,
 }: {
   open: boolean;
-  onClose: (saved: boolean) => void;
+  onClose: (changed: boolean) => void;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
-  const [key, setKey] = useState('');
   const [fields, setFields] = useState(EMPTY);
-  const [source, setSource] = useState<'extension' | 'sign-in' | null>(null);
   const [login, setLogin] = useState({ username: '', password: '', code: '' });
+  /** Whether a session was already stored when the dialog opened. */
+  const [connected, setConnected] = useState(false);
+  /** Closing a <dialog> fires its own close event, so the outcome is latched. */
+  const reported = useRef(false);
 
-  const adopt = useCallback((session: LinkedInSession, from: 'extension' | 'sign-in') => {
-    setFields({ ...EMPTY, ...session });
-    setSource(from);
-  }, []);
-
-  const onSignedIn = useCallback(
-    (session: LinkedInSession) => {
-      adopt(session, 'sign-in');
-      setLogin({ username: '', password: '', code: '' });
+  const close = useCallback(
+    (changed: boolean) => {
+      if (reported.current) return;
+      reported.current = true;
+      onClose(changed);
     },
-    [adopt],
+    [onClose],
   );
 
-  const { state, start, submitCode, reset } = useSignIn(onSignedIn);
+  /** A session arrived, from whichever route. Store it and get out of the way. */
+  const accept = useCallback(
+    (session: LinkedInSession) => {
+      linkedInSession.set(session);
+      close(true);
+    },
+    [close],
+  );
+
+  const { state, start, submitCode, reset } = useSignIn(accept);
+
+  /** Dismissal. Also abandons a parked sign-in, so its browser is freed. */
+  const dismiss = useCallback(() => {
+    reset();
+    close(false);
+  }, [reset, close]);
 
   useEffect(() => {
     const dialog = ref.current;
     if (!dialog) return;
     if (open) {
-      setKey(apiKey.get() ?? '');
-      setFields({ ...EMPTY, ...linkedInSession.get() });
-      setSource(null);
+      const stored = linkedInSession.get();
+      setFields({ ...EMPTY, ...stored });
+      setConnected(stored !== null);
+      reported.current = false;
       if (!dialog.open) dialog.showModal();
     } else if (dialog.open) {
       dialog.close();
@@ -66,66 +86,52 @@ export function SettingsDialog({
 
   /**
    * The extension pushes rather than being polled, so the dialog just listens
-   * while it is open. Saving still needs a deliberate press — a session that
-   * arrives is filled in, not committed behind the visitor's back.
+   * while it is open. It lands in the same place a sign-in does.
    */
   useEffect(() => {
     if (!open) return;
-    return onExtensionSession((session) => adopt(session, 'extension'));
-  }, [open, adopt]);
+    return onExtensionSession(accept);
+  }, [open, accept]);
 
   const update = (patch: Partial<typeof EMPTY>) => setFields((prev) => ({ ...prev, ...patch }));
   const hasSession = Boolean(fields.liAt.trim() || fields.cookie.trim());
   const busy = state.phase === 'working' || (state.phase === 'challenge' && state.busy);
 
-  const finish = (saved: boolean) => {
-    reset();
-    onClose(saved);
-  };
-
   return (
-    <dialog ref={ref} onClose={() => finish(false)}>
+    <dialog ref={ref} onClose={dismiss}>
+      {/*
+        Still a <form>, with no submit buttons in its footer: it is what makes
+        Enter in the cookie fields mean "use this", rather than the browser's
+        implicit submit closing the dialog and dropping what was typed.
+      */}
       <form
-        method="dialog"
         className="settings-form"
         onSubmit={(event) => {
-          const saving =
-            (event.nativeEvent as SubmitEvent).submitter?.getAttribute('value') === 'save';
-          if (saving) {
-            apiKey.set(key);
-            linkedInSession.set(fields);
-          }
-          finish(saving);
+          event.preventDefault();
+          linkedInSession.set(fields);
+          close(true);
         }}
       >
-        <h2>Settings</h2>
-
-        <label className="field-label" htmlFor="api-key">
-          API key
-        </label>
-        <p>
-          Sent as <code>x-api-key</code>. Leave blank if the API is open.
-        </p>
-        <input
-          id="api-key"
-          type="password"
-          value={key}
-          onChange={(e) => setKey(e.target.value)}
-          autoComplete="off"
-        />
-
-        <hr />
+        <div className="dialog-head">
+          <h2>Connect LinkedIn</h2>
+          <button type="button" className="icon-button" onClick={dismiss} aria-label="Close">
+            &times;
+          </button>
+        </div>
 
         <div className="section-head">
           <span className="field-label">Your LinkedIn session</span>
-          {hasSession && (
-            <span className="badge badge--ok">
-              {source === 'sign-in'
-                ? 'Signed in'
-                : source === 'extension'
-                  ? 'Received from extension'
-                  : 'Set'}
-            </span>
+          {connected && (
+            <button
+              type="button"
+              className="ghost small"
+              onClick={() => {
+                linkedInSession.set(null);
+                close(true);
+              }}
+            >
+              Disconnect
+            </button>
           )}
         </div>
         <p>
@@ -134,50 +140,17 @@ export function SettingsDialog({
         </p>
 
         {state.phase === 'challenge' ? (
-          <div className="challenge">
-            <p className="challenge-message">{state.message}</p>
-
-            {state.kind === 'app-approval' ? (
-              // Nothing to press: the poll in useSignIn resolves this as soon as
-              // the notification is tapped, so the only honest control is cancel.
-              <p className="note" aria-live="polite">
-                Waiting for you to approve it&hellip;
-              </p>
-            ) : (
-              <div className="row">
-                <input
-                  type="text"
-                  inputMode="numeric"
-                  autoComplete="one-time-code"
-                  value={login.code}
-                  onChange={(e) => setLogin({ ...login, code: e.target.value })}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      e.preventDefault();
-                      void submitCode(login.code);
-                    }
-                  }}
-                  placeholder="Verification code"
-                  aria-label="Verification code"
-                />
-                <button
-                  type="button"
-                  className="primary"
-                  disabled={busy || !login.code.trim()}
-                  onClick={() => void submitCode(login.code)}
-                >
-                  {busy ? 'Checking…' : 'Submit'}
-                </button>
-              </div>
-            )}
-
-            <button type="button" className="ghost" onClick={reset}>
-              Cancel sign-in
-            </button>
-          </div>
+          <ChallengePanel
+            kind={state.kind}
+            message={state.message}
+            since={state.since}
+            busy={busy}
+            code={login.code}
+            onCode={(code) => setLogin({ ...login, code })}
+            onSubmitCode={() => void submitCode(login.code)}
+            onCancel={dismiss}
+          />
         ) : (
-          // Not a nested <form>: this dialog already is one, and the buttons
-          // below submit it. Enter is wired up by hand instead.
           <div className="signin">
             <input
               type="email"
@@ -209,11 +182,22 @@ export function SettingsDialog({
             >
               {busy ? 'Signing in…' : 'Sign in to LinkedIn'}
             </button>
-            <p className="note">
-              LinkedIn may ask you to approve this from the LinkedIn app on your phone. Your
-              password goes to the API once and is not stored; only the session cookie it returns
-              is kept, and only in this tab.
-            </p>
+            {state.phase === 'working' ? (
+              // The server holds this request open for up to twenty seconds so an
+              // approval tapped quickly resolves without a second round trip. That
+              // is a long time to watch a disabled button with no explanation.
+              <p className="note" aria-live="polite">
+                Signing in through a real browser, which takes a few seconds. If LinkedIn wants you
+                to approve this, the request is on its way to the LinkedIn app on your phone
+                &mdash; keep it handy.
+              </p>
+            ) : (
+              <p className="note">
+                LinkedIn may ask you to approve this from the LinkedIn app on your phone. Your
+                password goes to the API once and is not stored; only the session cookie it returns
+                is kept, and only in this tab.
+              </p>
+            )}
           </div>
         )}
 
@@ -226,23 +210,9 @@ export function SettingsDialog({
 
         <details className="manual">
           <summary>Already signed in to LinkedIn here? Skip the password</summary>
-          <ol className="connect-steps">
-            <li>
-              Install the extension from the <code>extension/</code> folder of this repo &mdash;
-              <code>chrome://extensions</code>, Developer mode, Load unpacked.
-            </li>
-            <li>
-              Click the extension icon and press <strong>Send to this tab</strong>.
-            </li>
-          </ol>
-          <p className="note">
-            It has to be an extension rather than a bookmarklet: <code>li_at</code> is{' '}
-            <code>HttpOnly</code>, so page scripts cannot read it and only the browser&rsquo;s
-            cookie API can.
-          </p>
 
           <label className="field-label" htmlFor="li-cookie">
-            Or paste the cookie header
+            Paste the cookie header
           </label>
           <p>
             DevTools &rarr; Network &rarr; click any <code>linkedin.com</code> request &rarr; copy
@@ -277,32 +247,19 @@ export function SettingsDialog({
             placeholder="JSESSIONID (optional)"
             autoComplete="off"
           />
+
+          {/* The one submit button in the dialog: a pasted cookie is the only
+              route that needs a deliberate press, because nothing announces it
+              the way a completed sign-in does. */}
+          <button type="submit" className="primary manual-save" disabled={!hasSession}>
+            Use this cookie
+          </button>
         </details>
 
         <p className="note">
           Revoke access at any time by signing that LinkedIn session out from LinkedIn&rsquo;s own
           device list.
         </p>
-
-        <menu>
-          <button
-            value="clear"
-            type="button"
-            className="ghost"
-            onClick={() => {
-              setFields(EMPTY);
-              setSource(null);
-            }}
-          >
-            Clear
-          </button>
-          <button value="cancel" className="ghost" type="submit">
-            Cancel
-          </button>
-          <button value="save" type="submit" className="primary">
-            Save
-          </button>
-        </menu>
       </form>
     </dialog>
   );

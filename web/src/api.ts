@@ -108,12 +108,16 @@ export const API_BASE = (import.meta.env.VITE_API_URL ?? 'http://localhost:3000'
 const KEY_STORAGE = 'linkedin-profile-api:key';
 const SESSION_STORAGE = 'linkedin-profile-api:linkedin';
 
+/**
+ * An `x-api-key` for deployments that require one.
+ *
+ * Read-only, and no longer surfaced in the UI: this deployment does not gate the
+ * API, and a key field on the settings dialog was one more thing to explain for
+ * no benefit. Anyone fronting the API with a key can still set the storage entry
+ * by hand and every request will carry it.
+ */
 export const apiKey = {
   get: (): string | null => localStorage.getItem(KEY_STORAGE),
-  set: (value: string): void => {
-    if (value.trim()) localStorage.setItem(KEY_STORAGE, value.trim());
-    else localStorage.removeItem(KEY_STORAGE);
-  },
 };
 
 /**
@@ -132,6 +136,12 @@ export interface LinkedInSession {
    * the extension has a path that does not involve hunting for a single value.
    */
   cookie?: string;
+  /**
+   * The browser the cookie was minted under, returned by a sign-in and sent back
+   * with each lookup so the server presents itself to LinkedIn as the client
+   * that earned the session. Absent for a hand-pasted cookie, which cannot know.
+   */
+  userAgent?: string;
 }
 
 /**
