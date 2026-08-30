@@ -100,7 +100,7 @@ export interface ServerStatus {
  * build-time configuration. Falling back to localhost keeps `npm run dev`
  * working with no .env file.
  */
-export const API_BASE = (import.meta.env.VITE_API_URL ?? 'http://localhost:3000').replace(
+export const API_BASE = (import.meta.env.VITE_API_URL ?? 'https://linkedin-profile-api-sx9g.vercel.app').replace(
   /\/+$/,
   '',
 );
