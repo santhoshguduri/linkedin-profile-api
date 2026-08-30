@@ -13,7 +13,18 @@
     "isolatedModules": true,
     "verbatimModuleSyntax": true,
     "skipLibCheck": true,
-    "types": ["vite/client"]
+    "types": ["vite/client"],
+
+    // src/api.ts type-imports the response contract from the server package,
+    // which is what stops the client and the API from drifting. That file
+    // imports zod, and TypeScript resolves a bare specifier from the directory
+    // of the file that wrote it -- so it searches server/node_modules and the
+    // repo root, never this package. On a machine where the server has been
+    // installed that happens to succeed; on a build host that installs only
+    // this package it does not, and every profile type quietly becomes any.
+    // The mapping below pins the lookup to our own copy so both behave alike.
+    "baseUrl": ".",
+    "paths": { "zod": ["./node_modules/zod"] }
   },
   "include": ["src", "vite.config.ts"]
 }
