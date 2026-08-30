@@ -739,7 +739,7 @@ halves cannot drift.
   is where it will surface.
 - **Password sign-in needs a browser on the server, and it is not free.** Each
   attempt launches Chromium (~100 MB RSS, a second or two of startup) and the
-  runtime image is ~1.5 GB rather than ~150 MB. A host with 256 MB of RAM cannot
+  runtime image is ~2.5 GB rather than ~150 MB. A host with 256 MB of RAM cannot
   run it; set `BROWSER_LOGIN=false` there and use a cookie.
 - **A password sign-in usually needs a phone the first time.** LinkedIn treats a
   new server IP as a new device. That is fine for a person using the web app and
@@ -836,7 +836,8 @@ unprivileged `pwuser`.
 The runtime stage is `mcr.microsoft.com/playwright`, not `node:alpine`, because
 password sign-in needs Chromium and Chromium needs ~90 shared libraries (fonts,
 nss, libdrm, ...). Installing those onto a slim base by hand is a long list that
-drifts with every Chromium release. The cost is image size: roughly 1.5 GB,
+drifts with every Chromium release. The cost is image size: roughly 2.5 GB
+(measured, not estimated: `docker images` reports 2.52 GB),
 against roughly 150 MB for the Node image.
 
 **The base image tag and the `playwright` dependency must name the same
