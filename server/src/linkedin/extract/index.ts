@@ -16,7 +16,7 @@
  */
 import type { Logger } from 'pino';
 import type { Config } from '../../config.js';
-import { AppError } from '../../util/errors.js';
+import { AppError, type ErrorCode } from '../../util/errors.js';
 import {
   ProfileSchema,
   SECTION_KEYS,
@@ -118,6 +118,16 @@ export function extractFromProfileHtml(html: string, tree: unknown): PageExtract
   };
 }
 
+/**
+ * Render failures the plain-fetch fallback cannot do better on, so they are
+ * returned as-is instead of being downgraded to a warning.
+ */
+const FINAL_VERDICTS = new Set<ErrorCode>([
+  'SESSION_INVALID',
+  'CHALLENGE_REQUIRED',
+  'PROFILE_NOT_FOUND',
+]);
+
 export async function extractProfile(
   slug: string,
   fetcher: LinkedInFetcher,
@@ -131,10 +141,16 @@ export async function extractProfile(
   // deleted: it still returns identity and the top card, which is a usable
   // profile, and it is all a deployment without Chromium can offer.
   let page;
+  let renderFailure: unknown;
   if (config.RENDER_PROFILES) {
     try {
       page = await fetchRenderedProfilePage(fetcher, slug, config);
     } catch (error) {
+      // A verdict about the session is final. The fallback fetch carries the
+      // same cookie to the same host, so it can only fail the same way, and
+      // the render's answer is the one the caller can act on.
+      if (error instanceof AppError && FINAL_VERDICTS.has(error.code)) throw error;
+      renderFailure = error;
       log.warn({ slug, err: error }, 'render failed, falling back to plain fetch');
       warnings.push('sections unavailable: the page could not be rendered');
     }
@@ -144,10 +160,14 @@ export async function extractProfile(
   if (page.isEmpty) {
     // The page loaded and passed the auth check but carried no payload — a shape
     // we do not recognise rather than a known failure mode.
+    // When the render is what went wrong, its error is the diagnosis and the
+    // empty shell is only the symptom. Reporting the symptom here sent
+    // operators reading the parser over a missing browser or a dead cookie.
+    if (renderFailure instanceof AppError) throw renderFailure;
     throw new AppError(
       'UPSTREAM_ERROR',
       'Profile page contained no decodable payload.',
-      { details: { bytes: page.html.length } },
+      { details: { bytes: page.html.length }, ...(renderFailure ? { cause: renderFailure } : {}) },
     );
   }
   if (page.malformedRows > 0) {
