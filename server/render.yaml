@@ -13,7 +13,6 @@ services:
   - type: web
     name: linkedin-profile-api
     runtime: docker
-    repo: https://github.com/santhoshguduri/linkedin-profile-api
     rootDir: server
     dockerfilePath: ./Dockerfile
     plan: free
