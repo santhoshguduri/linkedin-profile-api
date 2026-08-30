@@ -23,12 +23,15 @@ GET https://<your-api-host>/api/profile?url=https://www.linkedin.com/in/williamh
   },
   "meta": {
     "strategy": "html",
-    "sources": ["https://www.linkedin.com/in/williamhgates/", ".../details/experience/"],
-    "missingSections": ["courses"],
+    "sources": [
+      "https://www.linkedin.com/in/williamhgates/",
+      "https://www.linkedin.com/in/williamhgates/overlay/contact-info/"
+    ],
+    "missingSections": ["skills", "courses"],
     "partial": true,
     "cached": false,
     "fetchedAt": "2026-08-29T12:00:00.000Z",
-    "durationMs": 4210,
+    "durationMs": 11840,
     "warnings": []
   }
 }
@@ -85,14 +88,23 @@ cp .env.example .env       # VITE_API_URL=http://localhost:3000
 npm run dev                # http://localhost:5173
 ```
 
-Open the web app, press **Settings**, and sign in with your LinkedIn email and
-password. If LinkedIn asks you to approve it from the LinkedIn app on your phone,
-the dialog waits while you do.
+The web app asks to connect before it offers a search box — every lookup runs as
+a signed-in member, so a search without a session could only ever fail. Press
+**Connect LinkedIn** and sign in with your LinkedIn email and password. If
+LinkedIn asks you to approve it from the LinkedIn app on your phone, the dialog
+waits while you do, showing what to tap and how long it has been waiting. There
+is nothing to save: the dialog closes itself the moment a session arrives.
 
-If you would rather not hand over a password — and you are already signed in to
-LinkedIn in this browser — load the extension instead: `chrome://extensions` →
-Developer mode → **Load unpacked** → pick `extension/`, then click it and press
-**Send to this tab**. Both routes end with the same session cookie.
+Two ways to skip the password, both ending in the same session cookie:
+
+- **Paste the cookie header** under *Already signed in to LinkedIn here?* in the
+  same dialog, then press **Use this cookie**. DevTools → Network → any
+  `linkedin.com` request → copy the `Cookie` header.
+- **Load the extension**: `chrome://extensions` → Developer mode → **Load
+  unpacked** → pick `extension/`, then click it and press **Send to this tab**.
+  It fills the dialog in for you. The dialog no longer walks through this — it
+  was a lot of setup to explain to someone who mostly wants the paste box — but
+  the listener is still there, so an installed extension still works.
 
 Verify the API on its own:
 
@@ -186,15 +198,29 @@ up and handing back a handle, because an approval is often tapped within a few
 seconds and it is better to answer once than to make the client poll for
 something that already happened.
 
-Four challenge kinds are recognised, and the difference matters — two of them
-are resolvable and two are not:
+Four challenge kinds are recognised, and the difference matters — only one of
+them is a dead end:
 
 | Kind | Resolvable | What happens |
 |---|---|---|
 | `app-approval` | yes | polled automatically; resolves when you tap approve |
 | `code` | yes | the API asks for the code and submits it |
+| `unknown` | yes | polled like an approval — see below |
 | `captcha` | no | nobody can answer it unattended; browser is closed immediately |
-| `unknown` | no | an unrecognised checkpoint; browser is closed immediately |
+
+`unknown` is deliberately treated as waitable rather than fatal. It means
+LinkedIn showed a screen the classifier could not name, which is not the same as
+a screen nobody can clear — in practice it is usually an approval prompt worded
+in a way the patterns have not seen. Failing on it closed the browser and ended
+the sign-in within seconds, while the person was still reaching for their phone.
+Waiting costs one parked browser and is right far more often than it is wrong.
+
+There is a second, subtler reason that used to happen. The password field
+disappears the instant LinkedIn accepts the password, but the screen it swaps in
+is rendered by the SDUI runtime a beat later. Reading the page at that exact
+moment finds an empty body, so classification had nothing to match on and
+answered `unknown`. `#awaitChallengeScreen()` now polls for up to six seconds
+for the screen to become legible before it is judged.
 
 Classification is a pure function, `classifyChallenge()`, and it is tested
 against the real wordings in `tests/login.test.ts`. Order matters there: a
@@ -277,13 +303,14 @@ Server config is environment variables; `server/.env.example` is the annotated l
 | `LI_USERNAME`, `LI_PASSWORD` | — | The deployment's own LinkedIn account. Used **only when `LI_AT` is empty**: the server signs itself in through a browser on first use. Expect a one-time approval on the account holder's phone. |
 | `BROWSER_LOGIN` | `true` | Whether this deployment may launch Chromium at all. `false` makes the API cookie-only and `/api/auth` returns `LOGIN_UNAVAILABLE`. |
 | `BROWSER_HEADLESS` | `true` | `false` shows the window. Only useful for debugging a sign-in locally. |
-| `LOGIN_WAIT_MS` | `20000` | How long one sign-in request blocks waiting for a phone tap before answering "still waiting". Keep under your platform's proxy timeout. |
+| `LOGIN_WAIT_MS` | `20000` | How long one sign-in request blocks waiting for a phone tap before answering "still waiting". Keep under your platform's proxy timeout — the first request can also spend up to 6s waiting for the challenge screen to render. The total wait is not bounded by this: the client polls until the sign-in is five minutes old. |
 | `API_KEY` | — | When set, `/api/profile` and `/api/auth` require `x-api-key` (or `Authorization: Bearer`). Unset means open. |
 | `ALLOW_REQUEST_CREDENTIALS` | `true` | Whether callers may sign in or attach their own session. `false` disables `/api/auth`. |
 | `CORS_ORIGIN` | `*` | Comma-separated origins. Pin this to your client URL in production. |
 | `INBOUND_RPM` | `30` | Requests per minute per client IP. |
 | `OUTBOUND_RPM` | `6` | Requests per minute to LinkedIn. Above ~6 invites HTTP 999. |
-| `SECTION_CONCURRENCY` | `3` | Parallel `/details/` fetches per profile. |
+| `RENDER_PROFILES` | `true` | Load each profile in Chromium so LinkedIn's own runtime fetches the sections. `false` is much faster and returns the top card alone — the sections are not obtainable without it. |
+| `RENDER_TIMEOUT_MS` | `45000` | Ceiling on one render. Long profiles genuinely take tens of seconds; a value that is too low truncates them silently rather than failing. |
 | `CACHE_TTL_SECONDS` | `3600` | Response cache lifetime. |
 | `CACHE_MAX_ENTRIES` | `500` | Cache ceiling; oldest evicted. |
 | `REQUEST_TIMEOUT_MS` | `20000` | Per-hop timeout. |
@@ -535,22 +562,95 @@ CSS selectors are still there, as a *fallback* layer. `extract/` tries the tree
 first and falls back to cheerio when the tree does not carry a field. Both paths
 feed the same mapper.
 
-### Fetching only what is needed
+### The page below the top card is not in the page
 
-A profile page shows the first two or three entries of each section behind a
-"Show all 14 experiences" link; the full list lives at
-`/in/<slug>/details/experience/`.
+This is the part that took the longest to work out, and the part the earlier
+design got wrong.
 
-Fetching all eleven details pages every time would be eleven extra requests
-against a limit that starts returning HTTP 999 around seven per minute. So the
-extractor reads the profile page, finds which sections actually *have* a "Show
-all" link, and fetches only those, three at a time. A short profile costs one
-request. Contact info is one more, from `/overlay/contact-info/`, and its absence
-is normal — so failure there is a warning, never an error.
+The document LinkedIn returns carries the top card and nothing else. Experience,
+education, skills — every section below the fold — is absent from the markup
+entirely. The whole profile arrives as **55 text runs**, and the sections are
+fetched afterwards by the page's own runtime.
 
-Each section is allowed to fail alone. An unreachable `/details/skills/` names
-itself in `meta.missingSections` and the rest of the profile still returns. A
-partial profile is far more useful than a 502.
+The first plan was to read the "Show all 14 experiences" links and fetch
+`/in/<slug>/details/experience/`. That plan is dead, and it is worth saying why
+rather than quietly not doing it: **every profile route returns the same shell.**
+The contact-info overlay came back with the same 55 text runs as the profile
+page, byte for byte, differing only in the follower count — which proved the
+second fetch had really happened and had really returned nothing new. There is no
+details page to scrape.
+
+What the shell does carry is the anchors. Each empty section is a
+`ReplaceComponent` action with an `asyncContent` request naming the component to
+go and get:
+
+```jsonc
+"proto.sdui.actions.core.AsyncComponentRequest": {
+  "newComponentId": "com.linkedin.sdui.generated.profile.dsl.impl.profileCardsExperienceOnly",
+  "requestedArguments": { "payload": { "isSelfView": false, "vanityName": "..." } }
+}
+```
+
+There are about a dozen of these — `profileCardsExperienceOnly`,
+`profileCardsAboveActivity`, `profileCardsBelowActivityPart1` through `Part7`,
+and so on. No Voyager endpoint and no GraphQL query ids appear anywhere in the
+HTML; the URL those requests go to lives in the JavaScript bundle.
+
+Reimplementing that protocol by hand would mean pinning an endpoint, a set of
+component ids and a request envelope that LinkedIn changes on its own schedule.
+So `linkedin/renderer.ts` takes the other option: **load the page in Chromium and
+let LinkedIn's own runtime make those requests.** Playwright, a seeded `li_at`
+cookie, scroll to the bottom, read the DOM.
+
+Three things that are less obvious than they sound:
+
+- **`networkidle` never fires.** LinkedIn holds long-poll connections open for
+  the life of the page, so the built-in wait never resolves. The renderer instead
+  tracks in-flight requests itself and calls the page settled only when it is
+  scrolled to the bottom, nothing is pending, and neither the document height nor
+  its text length has changed across four consecutive half-second checks. An
+  earlier, shorter version of this declared victory after ~1.4s and silently
+  truncated longer profiles.
+- **The sign-in wall can arrive mid-render.** An expired cookie gets a 679 KB
+  profile shell first and a 76 KB auth wall swapped in a moment later, under the
+  profile's own URL, with HTTP 200. Nothing about the status or the path gives it
+  away, so the renderer checks for the wall's markup both on arrival *and* after
+  the scroll.
+- **Fonts, media and stylesheets are blocked; images are not.** Profile and
+  company images are part of the response contract, so their URLs have to be in
+  the DOM.
+
+### Reading the rendered DOM
+
+Hydrated markup has no stable class names — LinkedIn ships hashed CSS modules, so
+every element looks like `class="_02484ad3 _1f667e81"`. Two things survive a
+deploy, and `extract/rendered.ts` uses only those: **heading text** and the
+`componentkey` attribute.
+
+Sections are found by matching `<h2>` text against a table of known headings
+(including the variants LinkedIn actually uses — both `Licenses & Certifications`
+and `Licenses and Certifications`). The first match wins: section names recur
+further down the page inside "People also viewed" cards.
+
+Entries within a section come in two shapes — experience rows are
+`componentkey="entity-collection-item-<hash>"`, education rows are plain-UUID
+keys separated by `<hr>` — so the extractor takes every keyed element and keeps
+only the outermost, because an experience row contains a keyed `<a>` of its own
+and counting that would double the list.
+
+Each entry is reduced to its visible text runs in document order, plus the first
+image and the links. That is a `RawEntity`, the same shape the flight-tree path
+produces, so **every existing mapper is reused unchanged**.
+
+One consequence worth naming: hydration discards the
+`urn:li:fsd_profile:` strings entirely. The profile id survives only inside a
+component key — `sdui.profile.card.ref<id>Topcard` — which is where the identity
+extractor now recovers it from.
+
+Rendering costs a browser page and roughly ten seconds per profile, against a
+fraction of a second for a plain fetch. `RENDER_PROFILES=false` turns it off and
+returns the top card alone. That is the honest trade: the sections are not
+obtainable without it.
 
 ### Not getting banned
 
@@ -619,6 +719,24 @@ halves cannot drift.
 
 ## Known limitations
 
+- **A lookup takes about ten seconds, not one.** Every profile is rendered in a
+  browser, because that is the only way the sections load at all. A cache hit is
+  instant; a cold lookup is not. `RENDER_PROFILES=false` gets the sub-second
+  response back and gives up everything below the top card.
+- **Renders can truncate silently, and a truncated section is indistinguishable
+  from an absent one.** The settle heuristic — scrolled to the bottom, nothing in
+  flight, height and text unchanged for four consecutive checks — is a heuristic.
+  An earlier, more impatient version of it cut a long profile off at the Activity
+  section and reported the missing Experience as simply not present. The current
+  thresholds and the 45s ceiling hold for the profiles I have rendered; a much
+  longer profile on a much slower link could still trip it, and it would show up
+  as an unexpected entry in `meta.missingSections` rather than as an error.
+- **Skills, certifications and languages are the least-exercised paths.** Neither
+  profile I have captured has any of those sections, so the section-routing is
+  covered by tests and the container parsing is covered only by the two shapes I
+  have actually seen (experience's `entity-collection-item-<hash>` rows and
+  education's UUID-keyed rows). If LinkedIn renders skills as a third shape, that
+  is where it will surface.
 - **Password sign-in needs a browser on the server, and it is not free.** Each
   attempt launches Chromium (~100 MB RSS, a second or two of startup) and the
   runtime image is ~1.5 GB rather than ~150 MB. A host with 256 MB of RAM cannot
@@ -657,9 +775,10 @@ halves cannot drift.
   selectors-second limits the blast radius, and `npm run decode` replays a saved
   capture offline so a breakage is reproducible from a file — but a determined
   redesign upstream will need extractor work.
-- **Recommendations are not extracted.** The field exists and always returns
-  `[]`. Its details route uses a different card shape the generic mapper does not
-  handle, and an empty array beats wrong data.
+- **Recommendations are not extracted.** The field is in the schema and always
+  returns `[]`. The card carries a quote, an author and the author's relationship
+  to the subject, none of which the generic entity mapper models, and an empty
+  array beats wrong data.
 - **The cache is in-process.** Restarting clears it; two instances do not share
   it. Redis would be the fix; it was not worth the dependency here.
 - **Live field coverage is unverified.** Extraction is tested against recorded
@@ -777,10 +896,11 @@ server/
       credentials.ts      session resolution, cookie parsing, identity digests
       login.ts            browser-driven sign-in; challenge classification
       loginManager.ts     parked sign-ins, TTL, single-flight env login
+      renderer.ts         pooled Chromium; scroll until the lazy sections land
       url.ts              profile URL parsing
       ssr/                RSC flight payload decoder
-      pages/              profile, details and contact-info page fetchers
-      extract/            payload tree + DOM -> typed profile
+      pages/              profile and contact-info page fetchers
+      extract/            payload tree + rendered DOM -> typed profile
   scripts/decode.ts       replay a saved capture offline
   fixtures/               redacted HTML for tests
   tests/                  vitest
@@ -805,7 +925,7 @@ extension/
 
 ```bash
 cd server
-npm test            # vitest, 78 tests
+npm test            # vitest, 127 tests
 npm run typecheck
 ```
 
@@ -814,6 +934,14 @@ They cover the flight decoder including the chunk-splitting case that breaks
 naive parsers, URL parsing, session resolution, pasted-cookie parsing, cookie jar
 construction, auth-state detection, and the challenge classifier that decides
 whether a stalled sign-in is waiting on a phone tap or on a typed code.
+
+Section extraction is tested against `tests/fixtures/rendered-profile.html`,
+which is a real authenticated render with every attribute the parser does not
+read stripped off — which is also what removes the CSRF token, so it is safe to
+commit where the capture it came from is not. Real markup matters more here than
+anywhere else in the suite: the whole premise of `extract/rendered.ts` is that
+LinkedIn's DOM has no stable class names, so a hand-written fixture would only
+prove the extractor agrees with my guess about the DOM rather than with the DOM.
 
 The sign-in itself is not unit-tested — it needs a browser and a LinkedIn
 account. Its browser-independent half is (`classifyChallenge`,
