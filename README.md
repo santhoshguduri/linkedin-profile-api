@@ -870,6 +870,18 @@ with SPA rewrites and security headers.
 
 Then set `CORS_ORIGIN` on the API to the client's URL and redeploy it.
 
+> **The build reads files outside `web/`.** `src/api.ts` type-imports the
+> response contract from `server/src/schema/profile.ts`, so the whole repo has
+> to be on disk at build time. Vercel gates this behind *Settings > General >
+> Root Directory > Include source files outside of the Root Directory*; leave
+> it on. Netlify clones the whole repo regardless.
+>
+> That import is also why `zod` is a devDependency here and why `tsconfig.json`
+> maps it to this package's copy. TypeScript resolves a bare specifier from the
+> directory of the file that wrote it, so without the mapping it searches
+> `server/node_modules` -- present locally, absent on a build host -- and every
+> profile type quietly degrades to `any`.
+
 ### Extension
 
 Not published. Users load `extension/` unpacked — `chrome://extensions`,
