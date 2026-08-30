@@ -11,6 +11,7 @@ import { rateLimit } from 'express-rate-limit';
 import { pinoHttp } from 'pino-http';
 import type { Logger } from 'pino';
 import type { Config } from './config.js';
+import { probeChromium } from './linkedin/renderer.js';
 import { AppError } from './util/errors.js';
 import { ProfileService } from './service.js';
 import { requireApiKey } from './middleware/auth.js';
@@ -29,6 +30,18 @@ export interface App {
 export function createApp(config: Config, log: Logger): App {
   const app = express();
   const service = new ProfileService(config, log);
+
+  // Started, not awaited. It settles in milliseconds and only feeds the status
+  // getter, so blocking app construction on it would buy nothing.
+  if (config.BROWSER_LOGIN) {
+    void probeChromium().then((present) => {
+      if (!present) {
+        log.warn(
+          'BROWSER_LOGIN is on but no Chromium binary was found, so password sign-in is switched off and /api/status reports it unavailable. Profile lookups still need a browser: set LI_AT and RENDER_PROFILES=false for a top-card-only deployment, or run the Docker image, which ships one.',
+        );
+      }
+    });
+  }
 
   app.disable('x-powered-by');
   /**

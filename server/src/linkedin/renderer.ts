@@ -22,6 +22,7 @@
  * cadence. Letting Chromium do it costs seconds and keeps working across those
  * releases, so that is the trade made here.
  */
+import { existsSync } from 'node:fs';
 import type { Browser, BrowserContext, Page } from 'playwright';
 import { AppError } from '../util/errors.js';
 import type { SessionCredentials } from './credentials.js';
@@ -51,6 +52,43 @@ const BLOCKED_RESOURCES = new Set(['font', 'media', 'stylesheet']);
 
 let shared: Browser | null = null;
 let idleTimer: NodeJS.Timeout | null = null;
+
+/** null until the probe below has run; the answer is stable for the process. */
+let chromiumPresent: boolean | null = null;
+
+/**
+ * Whether a Chromium binary is on disk, which is a different question from
+ * whether this deployment is allowed to launch one.
+ *
+ * BROWSER_LOGIN answers permission and defaults to true, so a host that simply
+ * has no browser -- a serverless function, a plain Node buildpack -- used to
+ * advertise password sign-in in /api/status. The client believed it, offered the
+ * form, and the caller learned otherwise from a 501 after typing a password.
+ * Capability is checkable, so it gets checked.
+ */
+export async function probeChromium(): Promise<boolean> {
+  if (chromiumPresent !== null) return chromiumPresent;
+  try {
+    const { chromium } = await import('playwright');
+    const path = chromium.executablePath();
+    chromiumPresent = path.length > 0 && existsSync(path);
+  } catch {
+    // No playwright package, or a build with no browser registry behind it.
+    chromiumPresent = false;
+  }
+  return chromiumPresent;
+}
+
+/**
+ * The probe's last answer, or null while it is still running.
+ *
+ * Callers that cannot await -- the status getter is a synchronous property --
+ * should read null as "assume yes". The probe is kicked off when the app is
+ * built and settles in milliseconds, so the optimistic window closes long
+ * before a request arrives, and being briefly wrong in that direction only
+ * repeats today's behaviour rather than adding a new one.
+ */
+export const chromiumKnown = (): boolean | null => chromiumPresent;
 
 /**
  * One browser process, reused across requests and shut down once idle.

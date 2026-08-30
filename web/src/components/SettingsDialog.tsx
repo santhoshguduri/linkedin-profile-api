@@ -32,9 +32,20 @@ const EMPTY = { liAt: '', jsessionId: '', cookie: '', userAgent: '' };
 export function SettingsDialog({
   open,
   onClose,
+  passwordLogin = true,
 }: {
   open: boolean;
   onClose: (changed: boolean) => void;
+  /**
+   * Whether the API can actually sign someone in, from `/api/status`.
+   *
+   * False on a deployment with no browser -- a serverless function, a Node
+   * buildpack -- where the sign-in exists as a route but cannot run. Offering
+   * the form there spends a password to earn a 501, so the cookie path is shown
+   * on its own instead. Defaults true so the form survives an unreachable
+   * status call rather than vanishing on a transient error.
+   */
+  passwordLogin?: boolean;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
   const [fields, setFields] = useState(EMPTY);
@@ -150,6 +161,12 @@ export function SettingsDialog({
             onSubmitCode={() => void submitCode(login.code)}
             onCancel={dismiss}
           />
+        ) : !passwordLogin ? (
+          <p className="note" role="status">
+            This deployment cannot sign you in: it has no browser to drive LinkedIn&rsquo;s login
+            page with. Paste your cookie below instead &mdash; it reaches the same place, and it is
+            the route the hosted API expects.
+          </p>
         ) : (
           <div className="signin">
             <input

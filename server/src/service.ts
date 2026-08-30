@@ -15,6 +15,7 @@ import { extractProfile } from './linkedin/extract/index.js';
 import { parseProfileUrl } from './linkedin/url.js';
 import { LoginManager, EnvironmentLogin } from './linkedin/loginManager.js';
 import { TtlCache } from './util/cache.js';
+import { chromiumKnown } from './linkedin/renderer.js';
 import { AppError } from './util/errors.js';
 import { ProfileResponseSchema, type ProfileResponse } from './schema/profile.js';
 
@@ -96,7 +97,8 @@ export class ProfileService {
       /** True once a cookie is actually in hand, as opposed to merely obtainable. */
       sessionReady: this.#envSession.mode !== 'none',
       acceptsRequestCredentials: this.config.ALLOW_REQUEST_CREDENTIALS,
-      passwordLoginAvailable: this.config.BROWSER_LOGIN,
+      /** Permission and capability both, so the client never offers a 501. */
+      passwordLoginAvailable: this.config.BROWSER_LOGIN && chromiumKnown() !== false,
       activeSessions: this.#pool.size,
       activeLogins: this.#logins.activeLogins,
     };

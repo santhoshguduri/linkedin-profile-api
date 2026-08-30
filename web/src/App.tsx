@@ -222,6 +222,7 @@ export function App() {
 
       <SettingsDialog
         open={settingsOpen}
+        passwordLogin={status?.passwordLoginAvailable !== false}
         onClose={(changed) => {
           setSettingsOpen(false);
           // Covers connecting and disconnecting alike -- both change which
