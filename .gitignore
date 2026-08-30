@@ -20,3 +20,7 @@ Thumbs.db
 
 # Incremental TypeScript build state: machine-local, regenerated on every build.
 *.tsbuildinfo
+
+# Sign-in failure captures: screenshots and page text of a half-authenticated
+# session. Diagnostic only, never committed.
+server/debug/

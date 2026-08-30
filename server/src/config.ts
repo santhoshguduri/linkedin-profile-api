@@ -62,6 +62,33 @@ const EnvSchema = z.object({
    * the caller polls for anything longer.
    */
   LOGIN_WAIT_MS: z.coerce.number().int().positive().max(60_000).default(20_000),
+  /**
+   * Set to a path to have a failed sign-in dump the page it got stuck on. Off by
+   * default: the captures are session-bearing, so they are a debugging tool, not
+   * something to leave running on a deployment.
+   */
+  LOGIN_DEBUG_DIR: z.string().trim().min(1).optional(),
+
+  /**
+   * Render profiles in Chromium instead of reading the HTML directly.
+   *
+   * On by default because it has to be: LinkedIn lazy-loads every section below
+   * the top card through its server-driven-UI runtime, so the document fetched
+   * over plain HTTP carries a name and a headline and nothing more. Turning this
+   * off gives a fast, shallow profile -- useful on a host with no browser, and
+   * honest about what it returns.
+   */
+  RENDER_PROFILES: z.enum(['true', 'false']).default('true').transform((v) => v === 'true'),
+  /**
+   * Ceiling for one render, covering navigation plus the scroll that draws the
+   * lazy sections in. Whatever has loaded when it expires is what gets returned.
+   *
+   * 45s rather than 30s because a long profile needs it: a capture of Satya
+   * Nadella's ran out mid-scroll at 30s and came back missing Experience and
+   * Education entirely. A partial profile is a silent wrong answer, so the
+   * budget is set past the slow case rather than at the median.
+   */
+  RENDER_TIMEOUT_MS: z.coerce.number().int().positive().max(120_000).default(45_000),
 
   PROXY_URL: optionalStr.refine((v) => v === undefined || /^https?:\/\//i.test(v), {
     message: 'PROXY_URL must be an http(s) URL',
@@ -70,7 +97,6 @@ const EnvSchema = z.object({
   CACHE_TTL_SECONDS: z.coerce.number().int().nonnegative().default(3600),
   CACHE_MAX_ENTRIES: z.coerce.number().int().positive().default(500),
   OUTBOUND_RPM: z.coerce.number().int().positive().max(120).default(6),
-  SECTION_CONCURRENCY: z.coerce.number().int().positive().max(10).default(3),
   REQUEST_TIMEOUT_MS: z.coerce.number().int().positive().default(20_000),
 });
 

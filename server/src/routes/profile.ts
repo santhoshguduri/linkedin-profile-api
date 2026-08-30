@@ -33,6 +33,12 @@ const CredentialsSchema = z.object({
   jsessionId: z.string().optional(),
   /** A pasted `Cookie:` header, a DevTools cookie table, or a bare li_at value. */
   cookie: z.string().optional(),
+  /**
+   * The browser the cookie was minted under, echoed back from a sign-in. Sent so
+   * the lookup can present itself to LinkedIn as the client that earned the
+   * session rather than as this server's default.
+   */
+  userAgent: z.string().max(256).optional(),
   username: z.string().optional(),
   password: z.string().optional(),
 });
@@ -124,7 +130,7 @@ export function profileRouter(service: ProfileService, config: Config): Router {
       // are dropped here rather than forwarded to LinkedIn on the caller's behalf.
       const supplied: SessionCredentials = body
         ? mergeCredentials(
-            { liAt: body.liAt, jsessionId: body.jsessionId },
+            { liAt: body.liAt, jsessionId: body.jsessionId, userAgent: body.userAgent },
             parseCookieHeader(body.cookie),
           )
         : credentialsFromHeaders(req);

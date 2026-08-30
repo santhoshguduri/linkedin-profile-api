@@ -11,7 +11,7 @@ import { decodeFlight } from '../src/linkedin/ssr/index.js';
 import { detectAuthState } from '../src/linkedin/session.js';
 import { extractFromProfileHtml } from '../src/linkedin/extract/index.js';
 import { extractContactInfo } from '../src/linkedin/extract/contact.js';
-import { segmentProfile, sectionsWithMore } from '../src/linkedin/extract/segment.js';
+import { segmentProfile } from '../src/linkedin/extract/segment.js';
 import { cleanLines, flightTextRuns } from '../src/linkedin/extract/entities.js';
 
 const [file, ...flags] = process.argv.slice(2);
@@ -33,9 +33,20 @@ console.table({
   hasPayload: !decoded.isEmpty,
 });
 
-if (authState !== 'authenticated') {
-  console.log(`\nNot an authenticated page (${authState}); nothing to extract.`);
+/**
+ * A rendered capture reports `unknown`, not `authenticated`.
+ *
+ * `detectAuthState` scores markers that live in the server-rendered payload,
+ * and hydration removes them -- so the captures the renderer produces, which
+ * are the ones parser work needs most, used to be refused here. The sign-in
+ * wall is what actually matters and it is unambiguous, so only that is.
+ */
+if (authState === 'authwall' || /authwall-(join|sign-in)-form/.test(html)) {
+  console.log('\nThis capture is the sign-in wall, not a profile.');
   process.exit(0);
+}
+if (authState !== 'authenticated') {
+  console.log(`\nNote: auth state reads as "${authState}" -- normal for a rendered capture.`);
 }
 
 if (flags.includes('--rows')) {
@@ -62,7 +73,6 @@ if (flags.includes('--contact')) {
 console.log('\n=== segmentation ===');
 console.table({
   fragments: Object.keys(segmentProfile(html)).join(', ') || '(none)',
-  expandable: [...sectionsWithMore(html)].join(', ') || '(none)',
 });
 
 const result = extractFromProfileHtml(html, decoded.tree);

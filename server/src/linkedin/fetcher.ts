@@ -50,10 +50,21 @@ export class LinkedInFetcher {
     this.#jar = createCookieJar(session.credentials, config);
     this.#bucket = new TokenBucket(Math.max(2, config.OUTBOUND_RPM), config.OUTBOUND_RPM);
     this.#breaker = new CircuitBreaker(BREAKER_THRESHOLD, BREAKER_COOLDOWN_MS);
-    this.#userAgent = process.env.USER_AGENT?.trim() || DEFAULT_USER_AGENT;
+    // The session's own UA wins. A cookie harvested by the sign-in browser
+    // records the UA it was minted under, and LinkedIn checks that the two go
+    // together; only a session that cannot say falls back to the default.
+    this.#userAgent =
+      session.credentials.userAgent?.trim() ||
+      process.env.USER_AGENT?.trim() ||
+      DEFAULT_USER_AGENT;
     this.#dispatcher = config.PROXY_URL
       ? new ProxyAgent({ uri: config.PROXY_URL, connectTimeout: config.REQUEST_TIMEOUT_MS })
       : new Agent({ connectTimeout: config.REQUEST_TIMEOUT_MS });
+  }
+
+  /** The session this fetcher runs as, for the renderer to seed a browser with. */
+  get credentials() {
+    return this.session.credentials;
   }
 
   get breakerState() {

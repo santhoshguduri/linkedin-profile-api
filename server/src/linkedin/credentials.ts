@@ -10,6 +10,16 @@ import { createHash } from 'node:crypto';
 export interface SessionCredentials {
   liAt?: string | undefined;
   jsessionId?: string | undefined;
+  /**
+   * The User-Agent the cookie was minted under.
+   *
+   * LinkedIn ties a session to the client that created it, so replaying `li_at`
+   * from a browser that looks nothing like the one that signed in is a signal
+   * against you. Carrying the UA alongside the cookie -- rather than assuming a
+   * single process-wide default -- means a harvested session is always replayed
+   * as the browser that earned it. Optional: a pasted cookie may not know.
+   */
+  userAgent?: string | undefined;
 }
 
 /**
@@ -48,6 +58,19 @@ const trim = (value: string | undefined): string | undefined => {
   return cleaned ? cleaned : undefined;
 };
 
+/**
+ * A User-Agent safe to put in an outbound header.
+ *
+ * This string can arrive from a request body, and it is written straight into a
+ * header on the way to LinkedIn, so control characters would be a header
+ * injection. Anything outside printable ASCII is dropped and the result is
+ * capped -- a real UA is ~120 characters.
+ */
+const sanitiseUserAgent = (value: string | undefined): string | undefined => {
+  const cleaned = value?.replace(/[^ -~]/g, '').trim().slice(0, 256);
+  return cleaned ? cleaned : undefined;
+};
+
 const digest = (value: string): string =>
   createHash('sha256').update(value).digest('hex').slice(0, 16);
 
@@ -67,11 +90,15 @@ export function resolveSession(
   const liAt = trim(input.liAt);
   // LinkedIn stores JSESSIONID quoted; both forms are accepted on input.
   const jsessionId = trim(input.jsessionId)?.replace(/^"|"$/g, '');
+  const userAgent = sanitiseUserAgent(input.userAgent);
 
   if (!liAt) return { credentials: {}, mode: 'none', key: 'none', fromEnvironment };
 
   return {
-    credentials: { liAt, jsessionId },
+    // The UA rides along with the cookie but stays out of the key: identity is
+    // the cookie. Two callers holding the same session should share one jar even
+    // if one of them reports a different browser.
+    credentials: { liAt, jsessionId, userAgent },
     mode,
     key: `c_${digest(liAt)}`,
     fromEnvironment,

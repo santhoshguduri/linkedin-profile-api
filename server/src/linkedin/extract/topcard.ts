@@ -7,8 +7,10 @@
  * last name, canonical URL, vanity name and both URNs come out typed.
  */
 import * as cheerio from 'cheerio';
+import type { AnyNode } from 'domhandler';
 import { findObjectsWithKeys, findByViewName, collectImageAssets, type ImageAsset } from '../ssr/query.js';
 import { flightTextRuns, cleanLines } from './entities.js';
+import { topCardRuns } from './rendered.js';
 import type { ImageRendition, Profile } from '../../schema/profile.js';
 
 /**
@@ -17,6 +19,37 @@ import type { ImageRendition, Profile } from '../../schema/profile.js';
  */
 const PHOTO_RE = /profile-displayphoto/i;
 const BACKGROUND_RE = /profile-displaybackgroundimage|profile-banner/i;
+
+const PROFILE_URN_RE = /(?:urn:li:fsd_profile:)+([A-Za-z0-9_-]+)/;
+
+/**
+ * The profile id as it survives in the rendered DOM.
+ *
+ * Hydration drops the `urn:li:fsd_profile:...` strings entirely, but the SDUI
+ * component keys still carry the id verbatim -- `sdui.profile.card.refACoAA...Topcard`.
+ * Ids are a fixed 39 characters, which is why the length is pinned here: the
+ * card name is concatenated straight onto the end with no separator, so a greedy
+ * match would swallow "Topcard" along with it.
+ */
+const COMPONENT_KEY_URN_RE = /sdui\.profile\.card\.ref(ACo[A-Za-z0-9_-]{36})/;
+
+/**
+ * Strips LinkedIn's decorations from the document title.
+ *
+ * Two of them, and both have bitten: the page carries an unread-notification
+ * count as a "(5) " prefix, and the previous suffix pattern was written
+ * `/\s\*\|\s*LinkedIn$/`, where `\*` matches a literal asterisk rather than
+ * repeating the whitespace -- so it never matched and the full name came out as
+ * "(5) Bill Gates | LinkedIn", which in turn stopped the headline being found.
+ */
+function nameFromTitle(title: string): string | null {
+  return (
+    title
+      .replace(/^\(\d+\)\s*/, '')
+      .replace(/\s*\|\s*LinkedIn\s*$/i, '')
+      .trim() || null
+  );
+}
 
 export interface Identity {
   firstName: string | null;
@@ -51,11 +84,14 @@ export function extractIdentity(tree: unknown, html: string): Identity {
     return null;
   };
 
-  // URNs are doubled in some payloads ("urn:li:fsd_profile:urn:li:fsd_profile:ACo...").
+  // URNs come doubled in some payloads: "urn:li:fsd_profile:urn:li:fsd_profile:ACo...".
+  // The `+` on the prefix group is what handles that -- without it the id class
+  // stops at the second colon and captures the literal string "urn".
   const rawProfileUrn = pick(['profileUrn', 'vieweeProfileUrn']);
   const profileId =
-    /urn:li:fsd_profile:([A-Za-z0-9_-]+)/.exec(rawProfileUrn ?? '')?.[1] ??
-    /urn:li:fsd_profile:([A-Za-z0-9_-]+)/.exec(html)?.[1] ??
+    PROFILE_URN_RE.exec(rawProfileUrn ?? '')?.[1] ??
+    PROFILE_URN_RE.exec(html)?.[1] ??
+    COMPONENT_KEY_URN_RE.exec(html)?.[1] ??
     null;
 
   let memberId: string | null = null;
@@ -118,9 +154,19 @@ const assetFromUrls = (urls: ImageRendition[]): ImageAsset | null =>
 function imagesFromDom(html: string): { picture: ImageAsset | null; background: ImageAsset | null } {
   const $ = cheerio.load(html);
 
-  const collect = (selector: string): ImageRendition[] => {
+  /**
+   * Pulls every usable image URL out of an existing selection.
+   *
+   * Takes nodes rather than a selector string on purpose. This used to build a
+   * selector by mapping the card's images back to `#<their id>` -- which broke
+   * the moment an <img> had no id, because the join produced a bare `#` and the
+   * CSS parser threw. LinkedIn does not give every avatar an id, so that was a
+   * crash waiting for the right profile. The elements are already in hand; there
+   * is no reason to round-trip them through a selector at all.
+   */
+  const collectFrom = (nodes: cheerio.Cheerio<AnyNode>): ImageRendition[] => {
     const out: ImageRendition[] = [];
-    $(selector).each((_, el) => {
+    nodes.each((_, el) => {
       const node = $(el);
       const srcset = node.attr('imagesrcset') ?? node.attr('srcset');
       if (srcset) out.push(...renditionsFromSrcset(srcset));
@@ -130,13 +176,13 @@ function imagesFromDom(html: string): { picture: ImageAsset | null; background: 
     return out;
   };
 
+  const collect = (selector: string): ImageRendition[] => collectFrom($(selector));
+
   const preload = collect('link[rel="preload"][as="image"]').filter((r) => PHOTO_RE.test(r.url));
 
   const link = $('a[href*="/overlay/contact-info"]').first();
   const card = link.length > 0 ? link.closest('section') : $('main section').first();
-  const cardPhotos = card.length > 0
-    ? collect(card.find('img').get().map((el) => `#${$(el).attr('id') ?? ''}`).join(',') || 'nonexistent')
-    : [];
+  const cardPhotos = card.length > 0 ? collectFrom(card.find('img')) : [];
 
   const inCard: ImageRendition[] = [];
   card.find('img').each((_, el) => {
@@ -209,29 +255,6 @@ const normaliseHeadline = (value: string | null): string | null =>
 const COUNTRY_RE = /,\s*([^,]+)$/;
 
 
-/**
- * Visible text of the top card, read from the DOM.
- *
- * The card is located by the "Contact info" overlay link it always contains —
- * a routing anchor, not a class, so it survives restyling. Used when the flight
- * payload does not carry the display fields (older page variants, and any
- * response where the top card arrived as markup rather than as data).
- */
-function topCardRunsFromDom(html: string): string[] {
-  const $ = cheerio.load(html);
-  const link = $('a[href*="/overlay/contact-info"]').first();
-  const card = link.length > 0 ? link.closest('section') : $('main section').first();
-  if (card.length === 0) return [];
-
-  const texts = card
-    .find('span, div, h1, h2, a')
-    .filter((_, el) => $(el).children().length === 0)
-    .map((_, el) => $(el).text())
-    .get();
-
-  return cleanLines(texts);
-}
-
 /** Display fields readable from one stream of text runs. */
 function readCard(runs: string[], fullName: string | null) {
   const nameIndex = fullName
@@ -274,8 +297,7 @@ function readCard(runs: string[], fullName: string | null) {
  */
 export function extractTopcard(tree: unknown, html: string, identity: Identity) {
   const $ = cheerio.load(html);
-  const title = $('title').first().text().trim();
-  const fromTitle = title.replace(/\s\*\|\s*LinkedIn\s*$/i, '').trim() || null;
+  const fromTitle = nameFromTitle($('title').first().text());
 
   const composed =
     [identity.firstName, identity.lastName].filter(Boolean).join(' ').trim() || null;
@@ -283,7 +305,7 @@ export function extractTopcard(tree: unknown, html: string, identity: Identity) 
 
   const cardNodes = findByViewName(tree, /profile-top-card/);
   const flight = readCard(cleanLines(flightTextRuns(cardNodes.length > 0 ? cardNodes : tree)), fullName);
-  const dom = readCard(topCardRunsFromDom(html), fullName);
+  const dom = readCard(topCardRuns(html), fullName);
 
   // Field by field rather than source by source: the two anchors fail on
   // different fields, so preferring one wholesale would discard good data.

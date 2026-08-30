@@ -70,6 +70,7 @@ export class ProfileService {
         navigationTimeoutMs: config.REQUEST_TIMEOUT_MS,
         waitMs: config.LOGIN_WAIT_MS,
         proxyUrl: config.PROXY_URL,
+        debugDir: config.LOGIN_DEBUG_DIR,
       },
       log,
     );
