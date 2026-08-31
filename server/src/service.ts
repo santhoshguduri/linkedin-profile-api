@@ -143,7 +143,8 @@ export class ProfileService {
         return { ...hit, meta: { ...hit.meta, cached: true, strategy: 'cache' } };
       }
     }
-
+    this.log.debug({ slug }, 'cache miss');
+    console.log('cache miss');
     const existing = this.#inFlight.get(cacheKey);
     if (existing) {
       this.log.debug({ slug }, 'joined in-flight request');

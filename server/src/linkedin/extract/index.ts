@@ -155,7 +155,10 @@ export async function extractProfile(
       warnings.push('sections unavailable: the page could not be rendered');
     }
   }
+  console.log('render failure:', renderFailure);
   page ??= await fetchProfilePage(fetcher, slug);
+  console.log('fetched page URL:', page.url);
+  log.debug({ slug, pageUrl: page.url }, 'fetched profile page');
   sources.push(page.url);
   if (page.isEmpty) {
     // The page loaded and passed the auth check but carried no payload — a shape
@@ -180,7 +183,8 @@ export async function extractProfile(
     page.html,
     page.tree,
   );
-
+  console.log('extracted sections from profile HTML:', { identity, topcard, images, about, sections });
+  log.debug({ slug, identity, topcard, images, about, sections }, 'extracted sections from profile HTML');
   // A details page carries the whole section where the profile card carried
   // only its first few entries, so it wins on count. Never unconditionally: a
   // details page that rendered badly must not wipe out a good card.
