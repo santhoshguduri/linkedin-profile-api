@@ -15,7 +15,7 @@ import { extractProfile } from './linkedin/extract/index.js';
 import { parseProfileUrl } from './linkedin/url.js';
 import { LoginManager, EnvironmentLogin } from './linkedin/loginManager.js';
 import { TtlCache } from './util/cache.js';
-import { trackPeakRss } from './util/memory.js';
+import { memoryLimitMb, trackPeakMemory } from './util/memory.js';
 import { chromiumKnown } from './linkedin/renderer.js';
 import { AppError } from './util/errors.js';
 import { ProfileResponseSchema, type ProfileResponse } from './schema/profile.js';
@@ -170,8 +170,8 @@ export class ProfileService {
     console.log('fetcher created for session:', session.key);
     // Sampled across the render, which is the only part of a lookup big enough
     // to threaten a small instance, and reported below whether or not it grew.
-    const stopRss = trackPeakRss();
-    let peakRssMb = 0;
+    const stopMemory = trackPeakMemory();
+    let peakMemMb = 0;
     let result;
     try {
       result = await extractProfile(slug, fetcher, this.config, this.log);
@@ -183,7 +183,7 @@ export class ProfileService {
       }
       throw error;
     } finally {
-      peakRssMb = stopRss();
+      peakMemMb = stopMemory();
     }
     console.log('extraction started for cacheKey:', cacheKey);
     const response = ProfileResponseSchema.parse({
@@ -206,7 +206,8 @@ export class ProfileService {
         slug,
         session: session.key,
         durationMs: response.meta.durationMs,
-        peakRssMb,
+        peakMemMb,
+        limitMb: memoryLimitMb(),
         missing: result.missingSections.length,
       },
       'profile extracted',
