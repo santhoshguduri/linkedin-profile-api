@@ -236,32 +236,12 @@ export function SettingsDialog({
             the <code>Cookie</code> request header. The server keeps <code>li_at</code> and{' '}
             <code>JSESSIONID</code> and discards everything else.
           </p>
-          <textarea
-            id="li-cookie"
-            value={fields.cookie}
-            onChange={(e) => update({ cookie: e.target.value, liAt: '', jsessionId: '' })}
-            placeholder="bcookie=v=2&...; li_at=AQEDAT...; JSESSIONID=&quot;ajax:123&quot;; lidc=..."
-            rows={3}
-            autoComplete="off"
-            spellCheck={false}
-          />
-
-          <label className="field-label" htmlFor="li-at">
-            Or the values on their own
-          </label>
           <input
             id="li-at"
             type="password"
             value={fields.liAt}
             onChange={(e) => update({ liAt: e.target.value, cookie: '' })}
             placeholder="li_at cookie"
-            autoComplete="off"
-          />
-          <input
-            type="password"
-            value={fields.jsessionId}
-            onChange={(e) => update({ jsessionId: e.target.value, cookie: '' })}
-            placeholder="JSESSIONID (optional)"
             autoComplete="off"
           />
 
