@@ -97,16 +97,24 @@ const RESULT_MESSAGES: Readonly<Record<string, string>> = {
  */
 export interface ApiChallenge {
   readonly status: 'challenge';
+  readonly code: string;
   readonly kind: ChallengeKind;
   readonly message: string;
   readonly url: string;
   readonly cookies: ReadonlyMap<string, string>;
 }
 
+/**
+ * Every result carries LinkedIn's raw verdict alongside the interpreted one.
+ *
+ * The interpretation is what a caller acts on; the code is what an operator
+ * needs. A sign-in that ends in "unknown" is undiagnosable without knowing
+ * whether LinkedIn said CHALLENGE, refused the password, or was never reached.
+ */
 export type ApiLoginResult =
-  | { status: 'authenticated'; credentials: SessionCredentials }
+  | { status: 'authenticated'; code: string; credentials: SessionCredentials }
   | ApiChallenge
-  | { status: 'failed'; message: string };
+  | { status: 'failed'; code: string; message: string };
 
 export interface ApiLoginOptions {
   readonly timeoutMs: number;
@@ -183,6 +191,7 @@ export function interpretAuthResponse(body: AuthBody, jar: ReadonlyMap<string, s
     const jsessionId = jar.get('JSESSIONID');
     return {
       status: 'authenticated',
+      code: result,
       credentials: {
         liAt,
         ...(jsessionId ? { jsessionId } : {}),
@@ -198,12 +207,14 @@ export function interpretAuthResponse(body: AuthBody, jar: ReadonlyMap<string, s
     if (!raw) {
       return {
         status: 'failed',
+        code: result,
         message: 'LinkedIn wants an extra verification step but did not say which one.',
       };
     }
     const kind = classifyByUrl(raw);
     return {
       status: 'challenge',
+      code: result,
       kind,
       message: CHALLENGE_MESSAGES[kind],
       url: raw.startsWith('http') ? raw : ORIGIN + raw,
@@ -213,6 +224,7 @@ export function interpretAuthResponse(body: AuthBody, jar: ReadonlyMap<string, s
 
   return {
     status: 'failed',
+    code: result,
     message: RESULT_MESSAGES[result] ?? 'LinkedIn refused the sign-in (' + result + ').',
   };
 }
@@ -221,7 +233,9 @@ export function interpretAuthResponse(body: AuthBody, jar: ReadonlyMap<string, s
 export const toOutcome = (result: ApiLoginResult): LoginOutcome =>
   result.status === 'challenge'
     ? { status: 'challenge', kind: result.kind, message: result.message }
-    : result;
+    : result.status === 'authenticated'
+      ? { status: 'authenticated', credentials: result.credentials }
+      : { status: 'failed', message: result.message };
 
 /**
  * Signs in with an email and password.

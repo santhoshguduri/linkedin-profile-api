@@ -120,9 +120,18 @@ export class LoginManager {
       proxyUrl: this.options.proxyUrl,
     });
 
+    // LinkedIn's own verdict, logged before anything is done with it. Every
+    // later branch is a consequence of this one string, and without it a
+    // sign-in that ends in "unknown" cannot be told apart from one that never
+    // reached LinkedIn at all.
+    this.log.info(
+      { result: result.code, next: result.status },
+      'linkedin answered the password sign-in',
+    );
+
     if (result.status !== 'challenge') {
       if (result.status === 'authenticated') this.log.info('password sign-in succeeded');
-      return result;
+      return toOutcome(result);
     }
 
     // Nothing here can be finished without a rendered page, so a deployment
@@ -263,8 +272,14 @@ export class LoginManager {
     // but it is also the one outcome nobody can debug from the response alone,
     // so what LinkedIn actually put on screen goes to the log once.
     if (outcome.status === 'challenge' && outcome.kind === 'unknown') {
-      const screen = await login.describeScreen().catch(() => null);
-      if (screen) this.log.warn(screen, 'unrecognised verification screen');
+      try {
+        this.log.warn(await login.describeScreen(), 'unrecognised verification screen');
+      } catch (err) {
+        // Swallowing this was a mistake: a failure to read the screen and a
+        // screen with nothing on it are different problems, and the silent
+        // version looked exactly like the log line never running.
+        this.log.warn({ err }, 'unrecognised verification screen, and it could not be read');
+      }
     }
 
     const handle = reuseHandle ?? randomBytes(18).toString('base64url');

@@ -75,10 +75,18 @@ describe('interpretAuthResponse', () => {
 
   it('names the refusals it knows', () => {
     const bad = interpretAuthResponse({ login_result: 'BAD_PASSWORD' }, jar({}));
-    expect(bad).toEqual({ status: 'failed', message: expect.stringMatching(/password/i) });
+    expect(bad).toEqual({
+      status: 'failed',
+      code: 'BAD_PASSWORD',
+      message: expect.stringMatching(/password/i),
+    });
 
     const locked = interpretAuthResponse({ login_result: 'ACCOUNT_LOCKED' }, jar({}));
-    expect(locked).toEqual({ status: 'failed', message: expect.stringMatching(/locked/i) });
+    expect(locked).toEqual({
+      status: 'failed',
+      code: 'ACCOUNT_LOCKED',
+      message: expect.stringMatching(/locked/i),
+    });
   });
 
   it('keeps an unrecognised code in the message', () => {
@@ -118,6 +126,7 @@ describe('toOutcome', () => {
   it('drops the url and cookies a caller must never see', () => {
     const outcome = toOutcome({
       status: 'challenge',
+      code: 'CHALLENGE',
       kind: 'app-approval',
       message: 'tap it',
       url: 'https://www.linkedin.com/checkpoint/challenge/AgH123',
@@ -127,8 +136,12 @@ describe('toOutcome', () => {
     expect(outcome).toEqual({ status: 'challenge', kind: 'app-approval', message: 'tap it' });
   });
 
-  it('passes a terminal result straight through', () => {
-    const failed = { status: 'failed', message: 'nope' } as const;
-    expect(toOutcome(failed)).toBe(failed);
+  it('drops the raw verdict from a terminal result too', () => {
+    // The code is for the log, not for the caller: it is LinkedIn's vocabulary
+    // and it changes without notice, so nothing outside this module builds on it.
+    expect(toOutcome({ status: 'failed', code: 'BAD_PASSWORD', message: 'nope' })).toEqual({
+      status: 'failed',
+      message: 'nope',
+    });
   });
 });
