@@ -259,6 +259,14 @@ export class LoginManager {
       return outcome;
     }
 
+    // An unrecognised screen is parked and waited on, which is the right call --
+    // but it is also the one outcome nobody can debug from the response alone,
+    // so what LinkedIn actually put on screen goes to the log once.
+    if (outcome.status === 'challenge' && outcome.kind === 'unknown') {
+      const screen = await login.describeScreen().catch(() => null);
+      if (screen) this.log.warn(screen, 'unrecognised verification screen');
+    }
+
     const handle = reuseHandle ?? randomBytes(18).toString('base64url');
     this.#pending.set(handle, { handle, login, kind: outcome.kind, touched: Date.now() });
     this.log.info({ handle, challenge: outcome.kind }, 'sign-in waiting on verification');

@@ -316,6 +316,10 @@ export class BrowserLogin {
         })),
       );
       await login.page.goto(url, { waitUntil: 'domcontentloaded' });
+      // The checkpoint arrives as an empty shell that the SDUI runtime fills a
+      // beat later, exactly as the post-password screen does. Classifying it on
+      // domcontentloaded reads a blank body and answers "unknown" every time.
+      await login.awaitChallengeScreen();
     } catch (cause) {
       await login.close();
       throw new AppError(
@@ -325,6 +329,34 @@ export class BrowserLogin {
       );
     }
     return login;
+  }
+
+  /**
+   * A short account of the screen LinkedIn is showing, for the log.
+   *
+   * Only when the classifier gave up. "unknown" is the one outcome that cannot
+   * be acted on from an error string -- it means LinkedIn showed something this
+   * code has never seen, and the only way to teach it the new wording is to read
+   * the wording. Without this the next step is guessing at selectors.
+   *
+   * Headings and control labels only, capped, and never the body. Those are
+   * LinkedIn's own interface strings rather than anything the account holds, and
+   * the full page would carry tokens -- which is why #capture is off by default.
+   */
+  async describeScreen(): Promise<{ path: string; labels: string[] }> {
+    const path = new URL(this.page.url()).pathname;
+    const labels = await this.page
+      .locator('h1, h2, button, [role="button"], label')
+      .allInnerTexts()
+      .catch(() => [] as string[]);
+
+    const seen = new Set<string>();
+    for (const label of labels) {
+      const cleaned = label.replace(/\s+/g, ' ').trim().slice(0, 80);
+      if (cleaned) seen.add(cleaned);
+      if (seen.size >= 12) break;
+    }
+    return { path, labels: [...seen] };
   }
 
   /** Best-effort teardown. A browser that fails to close must not fail a request. */
@@ -390,7 +422,7 @@ export class BrowserLogin {
       // next step -- which it can do without navigating, so watching the URL alone
       // would sit here for the whole budget with the answer already on screen.
       if (!(await firstVisible(this.page, PASSWORD_CANDIDATES, 250))) {
-        await this.#awaitChallengeScreen();
+        await this.awaitChallengeScreen();
         return;
       }
       await this.page.waitForTimeout(500);
@@ -398,7 +430,7 @@ export class BrowserLogin {
   }
 
   /**
-   * Waits for the screen that replaced the password form to say what it wants.
+   * Waits for a challenge screen to say what it wants.
    *
    * The password field vanishes the instant LinkedIn accepts the password, but
    * the screen it swaps in is rendered by the SDUI runtime a beat later. Reading
@@ -415,7 +447,7 @@ export class BrowserLogin {
    * spent inside the same HTTP request as the first approval wait, which has to
    * stay under the ~30s most platform proxies allow.
    */
-  async #awaitChallengeScreen(budgetMs = 6_000): Promise<void> {
+  async awaitChallengeScreen(budgetMs = 6_000): Promise<void> {
     const deadline = Date.now() + budgetMs;
     while (Date.now() < deadline) {
       // A cookie means the challenge resolved itself while we were looking.
