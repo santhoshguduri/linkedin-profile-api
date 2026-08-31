@@ -148,9 +148,10 @@ export class ProfileService {
     const existing = this.#inFlight.get(cacheKey);
     if (existing) {
       this.log.debug({ slug }, 'joined in-flight request');
+      console.log('joined in-flight request');
       return existing;
     }
-
+    console.log('starting new extraction for cacheKey:', cacheKey);
     const work = this.#extract(slug, session, cacheKey).finally(() =>
       this.#inFlight.delete(cacheKey),
     );
@@ -169,13 +170,15 @@ export class ProfileService {
     let result;
     try {
       result = await extractProfile(slug, fetcher, this.config, this.log);
+      console.log('extraction result for cacheKey:', cacheKey, result);
     } catch (error) {
       if (error instanceof AppError && error.code === 'SESSION_INVALID') {
         this.#invalidateEnvironmentSession(session.key);
+        console.log('invalidating environment session for cacheKey:', cacheKey);
       }
       throw error;
     }
-
+    console.log('extraction started for cacheKey:', cacheKey);
     const response = ProfileResponseSchema.parse({
       profile: result.profile,
       meta: {
@@ -189,7 +192,7 @@ export class ProfileService {
         warnings: result.warnings,
       },
     });
-
+    console.log('parsed response for cacheKey:', cacheKey, response);
     this.#cache.set(cacheKey, response);
     this.log.info(
       {

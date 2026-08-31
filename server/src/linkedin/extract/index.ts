@@ -145,6 +145,7 @@ export async function extractProfile(
   if (config.RENDER_PROFILES) {
     try {
       page = await fetchRenderedProfilePage(fetcher, slug, config);
+      console.log('rendered page fetched successfully for slug:', slug);
     } catch (error) {
       // A verdict about the session is final. The fallback fetch carries the
       // same cookie to the same host, so it can only fail the same way, and
