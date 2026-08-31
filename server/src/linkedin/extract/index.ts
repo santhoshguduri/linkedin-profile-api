@@ -144,6 +144,7 @@ export async function extractProfile(
   let renderFailure: unknown;
   if (config.RENDER_PROFILES) {
     try {
+      console.log('attempting to fetch rendered profile page for slug:', slug);
       page = await fetchRenderedProfilePage(fetcher, slug, config);
       console.log('rendered page fetched successfully for slug:', slug);
     } catch (error) {

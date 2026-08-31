@@ -166,7 +166,7 @@ export class ProfileService {
   ): Promise<ProfileResponse> {
     const started = Date.now();
     const fetcher = this.#fetcherFor(session);
-
+    console.log('fetcher created for session:', session.key);
     let result;
     try {
       result = await extractProfile(slug, fetcher, this.config, this.log);
