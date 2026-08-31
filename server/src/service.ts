@@ -68,6 +68,7 @@ export class ProfileService {
     this.#logins = new LoginManager(
       {
         enabled: config.BROWSER_LOGIN,
+        apiLogin: config.API_LOGIN,
         headless: config.BROWSER_HEADLESS,
         navigationTimeoutMs: config.REQUEST_TIMEOUT_MS,
         waitMs: config.LOGIN_WAIT_MS,

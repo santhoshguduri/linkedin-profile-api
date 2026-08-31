@@ -286,6 +286,47 @@ export class BrowserLogin {
     return new BrowserLogin(browser, context, page, options);
   }
 
+  /**
+   * Opens on a checkpoint LinkedIn has already issued, instead of on the form.
+   *
+   * The API sign-in gets a verdict where the form gets a CAPTCHA, but a verdict
+   * of CHALLENGE still needs a person looking at a rendered page. Seeding the
+   * context with the cookies that sign-in earned is what makes this the same
+   * checkpoint rather than a new one: navigating to the URL without them
+   * restarts the login and lands back on the form the API path exists to skip.
+   *
+   * The browser keeps its own desktop user agent rather than borrowing the
+   * mobile one the API used. Whatever finishes the challenge is what LinkedIn
+   * mints li_at for, and harvest() records that user agent alongside the cookie,
+   * so the session ends up internally consistent for every request after it.
+   */
+  static async openAt(
+    options: BrowserLoginOptions,
+    url: string,
+    cookies: ReadonlyMap<string, string>,
+  ): Promise<BrowserLogin> {
+    const login = await BrowserLogin.open(options);
+    try {
+      await login.context.addCookies(
+        [...cookies].map(([name, value]) => ({
+          name,
+          value,
+          domain: '.linkedin.com',
+          path: '/',
+        })),
+      );
+      await login.page.goto(url, { waitUntil: 'domcontentloaded' });
+    } catch (cause) {
+      await login.close();
+      throw new AppError(
+        'UPSTREAM_ERROR',
+        'LinkedIn asked for verification but the page it pointed at would not open.',
+        { cause },
+      );
+    }
+    return login;
+  }
+
   /** Best-effort teardown. A browser that fails to close must not fail a request. */
   async close(): Promise<void> {
     await this.context.close().catch(() => {});

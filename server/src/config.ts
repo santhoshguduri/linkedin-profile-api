@@ -53,6 +53,16 @@ const EnvSchema = z.object({
    * Whether this deployment may launch Chromium to sign in. Off makes the API
    * cookie-only, which is right for a host with no browser and no spare memory.
    */
+  /**
+   * Whether a password sign-in may use LinkedIn's mobile-app auth endpoint
+   * before falling back to driving the login form.
+   *
+   * On by default because the form is behind bot detection that answers a
+   * headless browser with a CAPTCHA, and a CAPTCHA is unanswerable unattended.
+   * The endpoint has no page to fingerprint, so it returns a verdict instead --
+   * including, when LinkedIn wants a human, the challenge to hand to a browser.
+   */
+  API_LOGIN: z.enum(['true', 'false']).default('true').transform((v) => v === 'true'),
   BROWSER_LOGIN: z.enum(['true', 'false']).default('true').transform((v) => v === 'true'),
   /** Headful is for debugging a sign-in locally; a server has no display. */
   BROWSER_HEADLESS: z.enum(['true', 'false']).default('true').transform((v) => v === 'true'),
@@ -123,7 +133,11 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): Config {
   const hasCookie = Boolean(env.LI_AT);
   // A password is only a way in if this deployment is allowed to open a browser,
   // so the two are reported as one fact rather than left for callers to combine.
-  const hasLogin = Boolean(env.LI_USERNAME && env.LI_PASSWORD && env.BROWSER_LOGIN);
+  // Either route can complete a password sign-in now, so a deployment with no
+  // browser still reports credentials mode when the API endpoint is available.
+  const hasLogin = Boolean(
+    env.LI_USERNAME && env.LI_PASSWORD && (env.API_LOGIN || env.BROWSER_LOGIN),
+  );
 
   return {
     ...env,

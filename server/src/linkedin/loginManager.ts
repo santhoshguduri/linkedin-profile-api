@@ -15,6 +15,7 @@ import { randomBytes } from 'node:crypto';
 import type { Logger } from 'pino';
 import { AppError } from '../util/errors.js';
 import type { SessionCredentials } from './credentials.js';
+import { apiSignIn, toOutcome } from './apiLogin.js';
 import { BrowserLogin, type ChallengeKind, type LoginOutcome } from './login.js';
 
 /** A parked sign-in is abandoned after this long. Chromium is too expensive to leak. */
@@ -54,7 +55,10 @@ export interface LoginManagerOptions {
   waitMs: number;
   proxyUrl?: string | undefined;
   debugDir?: string | undefined;
+  /** Whether Chromium may be launched: for the form, or to finish a challenge. */
   enabled: boolean;
+  /** Whether the mobile-app auth endpoint may be used before the form. */
+  apiLogin: boolean;
 }
 
 export class LoginManager {
@@ -77,29 +81,76 @@ export class LoginManager {
    * open only when LinkedIn asked for something a person has to do.
    */
   async start(username: string, password: string): Promise<LoginProgress> {
-    if (!this.options.enabled) {
+    if (!this.options.apiLogin && !this.options.enabled) {
       throw new AppError(
         'LOGIN_UNAVAILABLE',
         'Password sign-in is switched off on this deployment.',
-        { hint: 'Send a li_at cookie instead, or set BROWSER_LOGIN=true on the server.' },
+        { hint: 'Send a li_at cookie instead, or set API_LOGIN=true on the server.' },
       );
     }
 
     this.#reap();
-    if (this.#pending.size >= MAX_PENDING) {
-      throw new AppError(
-        'RATE_LIMITED',
-        'Too many sign-ins are waiting for verification. Try again shortly.',
-        { retryAfterSeconds: 60 },
-      );
+
+    if (this.options.apiLogin) {
+      try {
+        return await this.#startViaApi(username, password);
+      } catch (error) {
+        // The form is a poor substitute -- it is the path that gets CAPTCHAs --
+        // but "LinkedIn would not talk to this host" is exactly the case where
+        // a different client shape occasionally gets through, and refusing to
+        // try costs the caller a sign-in they might have had.
+        if (!this.options.enabled) throw error;
+        this.log.warn({ err: error }, 'api sign-in unavailable, falling back to the login form');
+      }
     }
 
-    const login = await BrowserLogin.open({
-      headless: this.options.headless,
-      navigationTimeoutMs: this.options.navigationTimeoutMs,
+    return this.#startViaBrowser(username, password);
+  }
+
+  /**
+   * Signs in over HTTP, and only reaches for a browser if LinkedIn asks for one.
+   *
+   * The happy path here never launches Chromium at all, which is worth saying
+   * out loud: it is the difference between a sign-in costing a few kilobytes and
+   * costing 300 MB on an instance that is already tight for rendering.
+   */
+  async #startViaApi(username: string, password: string): Promise<LoginProgress> {
+    const result = await apiSignIn(username, password, {
+      timeoutMs: this.options.navigationTimeoutMs,
       proxyUrl: this.options.proxyUrl,
-      debugDir: this.options.debugDir,
     });
+
+    if (result.status !== 'challenge') {
+      if (result.status === 'authenticated') this.log.info('password sign-in succeeded');
+      return result;
+    }
+
+    // Nothing here can be finished without a rendered page, so a deployment
+    // with no browser reports the challenge and stops rather than parking a
+    // handle that could never be resumed.
+    if (!this.options.enabled) return toOutcome(result);
+
+    this.#assertCapacity();
+    const login = await BrowserLogin.openAt(this.#browserOptions(), result.url, result.cookies);
+
+    let outcome: LoginOutcome;
+    try {
+      outcome = await login.state();
+      if (outcome.status === 'challenge' && WAITABLE.has(outcome.kind)) {
+        outcome = await login.waitForApproval(this.options.waitMs);
+      }
+    } catch (error) {
+      await login.close();
+      throw error;
+    }
+
+    return this.#settle(login, outcome);
+  }
+
+  /** The original path: drive the sign-in form in Chromium. */
+  async #startViaBrowser(username: string, password: string): Promise<LoginProgress> {
+    this.#assertCapacity();
+    const login = await BrowserLogin.open(this.#browserOptions());
 
     let outcome: LoginOutcome;
     try {
@@ -115,6 +166,25 @@ export class LoginManager {
     }
 
     return this.#settle(login, outcome);
+  }
+
+  #browserOptions() {
+    return {
+      headless: this.options.headless,
+      navigationTimeoutMs: this.options.navigationTimeoutMs,
+      proxyUrl: this.options.proxyUrl,
+      debugDir: this.options.debugDir,
+    };
+  }
+
+  #assertCapacity(): void {
+    if (this.#pending.size >= MAX_PENDING) {
+      throw new AppError(
+        'RATE_LIMITED',
+        'Too many sign-ins are waiting for verification. Try again shortly.',
+        { retryAfterSeconds: 60 },
+      );
+    }
   }
 
   /**
