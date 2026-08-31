@@ -100,7 +100,7 @@ export interface ServerStatus {
  * build-time configuration. Falling back to localhost keeps `npm run dev`
  * working with no .env file.
  */
-export const API_BASE = (import.meta.env.VITE_API_URL ?? 'https://linkedin-profile-api-dilt.onrender.com').replace(
+export const API_BASE = (import.meta.env.VITE_API_URL ?? 'https://linkedin-profile-api-345060544941.asia-south1.run.app').replace(
   /\/+$/,
   '',
 );
