@@ -239,15 +239,16 @@ export class ProfileService {
   /** Returns the pooled fetcher for an identity, creating it on first use. */
   #fetcherFor(session: ResolvedSession): LinkedInFetcher {
     this.#reap();
-
+    console.log('fetcher requested for session:', session.key);
     const existing = this.#pool.get(session.key);
     if (existing) {
       existing.lastUsed = Date.now();
       return existing.fetcher;
     }
-
+    console.log('no existing fetcher found for session:', session.key);
     const fetcher = new LinkedInFetcher(this.config, this.log, session);
     this.#pool.set(session.key, { fetcher, lastUsed: Date.now() });
+    console.log('session pooled for session:', session.key);
     this.log.debug({ session: session.key, mode: session.mode }, 'session pooled');
     return fetcher;
   }
