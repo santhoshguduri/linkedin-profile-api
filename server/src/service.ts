@@ -15,6 +15,7 @@ import { extractProfile } from './linkedin/extract/index.js';
 import { parseProfileUrl } from './linkedin/url.js';
 import { LoginManager, EnvironmentLogin } from './linkedin/loginManager.js';
 import { TtlCache } from './util/cache.js';
+import { trackPeakRss } from './util/memory.js';
 import { chromiumKnown } from './linkedin/renderer.js';
 import { AppError } from './util/errors.js';
 import { ProfileResponseSchema, type ProfileResponse } from './schema/profile.js';
@@ -167,6 +168,10 @@ export class ProfileService {
     const started = Date.now();
     const fetcher = this.#fetcherFor(session);
     console.log('fetcher created for session:', session.key);
+    // Sampled across the render, which is the only part of a lookup big enough
+    // to threaten a small instance, and reported below whether or not it grew.
+    const stopRss = trackPeakRss();
+    let peakRssMb = 0;
     let result;
     try {
       result = await extractProfile(slug, fetcher, this.config, this.log);
@@ -177,6 +182,8 @@ export class ProfileService {
         console.log('invalidating environment session for cacheKey:', cacheKey);
       }
       throw error;
+    } finally {
+      peakRssMb = stopRss();
     }
     console.log('extraction started for cacheKey:', cacheKey);
     const response = ProfileResponseSchema.parse({
@@ -199,6 +206,7 @@ export class ProfileService {
         slug,
         session: session.key,
         durationMs: response.meta.durationMs,
+        peakRssMb,
         missing: result.missingSections.length,
       },
       'profile extracted',
