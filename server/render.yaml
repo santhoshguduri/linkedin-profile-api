@@ -15,7 +15,12 @@ services:
     runtime: docker
     rootDir: server
     dockerfilePath: ./Dockerfile
-    plan: free
+    # Not free, and not a preference. Measured in this image under a hard cap
+    # with swap off: Chromium is 289 MB before it loads a page, 382 MB after one
+    # static article with images blocked, 434 MB once that article is scrolled.
+    # A profile is heavier than an article and 512 MB plans kill the container
+    # mid-request rather than swap. Standard is the first plan with room.
+    plan: standard
     healthCheckPath: /health
     envVars:
       - key: NODE_ENV

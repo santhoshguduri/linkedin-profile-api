@@ -156,6 +156,15 @@ export async function extractProfile(
       log.warn({ slug, err: error }, 'render failed, falling back to plain fetch');
       warnings.push('sections unavailable: the page could not be rendered');
     }
+  } else {
+    // Not a failure. An instance can be sized for the top card deliberately --
+    // Chromium wants about 300 MB before it loads anything -- and a caller
+    // reading missingSections deserves to know whether the sections are absent
+    // because extraction fell over or because this deployment never goes after
+    // them. Same empty list, opposite meanings.
+    warnings.push(
+      'sections unavailable: profile rendering is disabled on this deployment, so only the top card is returned',
+    );
   }
   console.log('render failure:', renderFailure);
   page ??= await fetchProfilePage(fetcher, slug);

@@ -38,8 +38,13 @@ COPY --from=build /app/dist ./dist
 
 # Run unprivileged. Chromium launches with --no-sandbox because the container is
 # already the isolation boundary, so it needs no elevated capabilities.
-RUN useradd --create-home --shell /bin/bash appuser && chown -R appuser /app
-USER appuser
+#
+# The base image's own `node` account is reused rather than a fresh one. It is
+# uid 1000, which is what hosts that bind-mount storage into a container expect
+# to own it; a hand-rolled account lands on 1001 behind `node` and inherits a
+# directory it cannot write.
+RUN chown -R node:node /app
+USER node
 EXPOSE 3000
 
 # The platform's own health check hits /health over HTTP; this one is for
