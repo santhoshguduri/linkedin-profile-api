@@ -144,9 +144,7 @@ export async function extractProfile(
   let renderFailure: unknown;
   if (config.RENDER_PROFILES) {
     try {
-      console.log('attempting to fetch rendered profile page for slug:', slug);
       page = await fetchRenderedProfilePage(fetcher, slug, config);
-      console.log('rendered page fetched successfully for slug:', slug);
     } catch (error) {
       // A verdict about the session is final. The fallback fetch carries the
       // same cookie to the same host, so it can only fail the same way, and
@@ -166,9 +164,7 @@ export async function extractProfile(
       'sections unavailable: profile rendering is disabled on this deployment, so only the top card is returned',
     );
   }
-  console.log('render failure:', renderFailure);
   page ??= await fetchProfilePage(fetcher, slug);
-  console.log('fetched page URL:', page.url);
   log.debug({ slug, pageUrl: page.url }, 'fetched profile page');
   sources.push(page.url);
   if (page.isEmpty) {
@@ -194,8 +190,6 @@ export async function extractProfile(
     page.html,
     page.tree,
   );
-  console.log('extracted sections from profile HTML:', { identity, topcard, images, about, sections });
-  log.debug({ slug, identity, topcard, images, about, sections }, 'extracted sections from profile HTML');
   // A details page carries the whole section where the profile card carried
   // only its first few entries, so it wins on count. Never unconditionally: a
   // details page that rendered badly must not wipe out a good card.

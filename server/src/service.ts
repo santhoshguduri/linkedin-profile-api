@@ -145,14 +145,11 @@ export class ProfileService {
       }
     }
     this.log.debug({ slug }, 'cache miss');
-    console.log('cache miss');
     const existing = this.#inFlight.get(cacheKey);
     if (existing) {
       this.log.debug({ slug }, 'joined in-flight request');
-      console.log('joined in-flight request');
       return existing;
     }
-    console.log('starting new extraction for cacheKey:', cacheKey);
     const work = this.#extract(slug, session, cacheKey).finally(() =>
       this.#inFlight.delete(cacheKey),
     );
@@ -167,7 +164,6 @@ export class ProfileService {
   ): Promise<ProfileResponse> {
     const started = Date.now();
     const fetcher = this.#fetcherFor(session);
-    console.log('fetcher created for session:', session.key);
     // Sampled across the render, which is the only part of a lookup big enough
     // to threaten a small instance, and reported below whether or not it grew.
     const stopMemory = trackPeakMemory();
@@ -175,17 +171,14 @@ export class ProfileService {
     let result;
     try {
       result = await extractProfile(slug, fetcher, this.config, this.log);
-      console.log('extraction result for cacheKey:', cacheKey, result);
     } catch (error) {
       if (error instanceof AppError && error.code === 'SESSION_INVALID') {
         this.#invalidateEnvironmentSession(session.key);
-        console.log('invalidating environment session for cacheKey:', cacheKey);
       }
       throw error;
     } finally {
       peakMemMb = stopMemory();
     }
-    console.log('extraction started for cacheKey:', cacheKey);
     const response = ProfileResponseSchema.parse({
       profile: result.profile,
       meta: {
@@ -199,7 +192,6 @@ export class ProfileService {
         warnings: result.warnings,
       },
     });
-    console.log('parsed response for cacheKey:', cacheKey, response);
     this.#cache.set(cacheKey, response);
     this.log.info(
       {
@@ -248,16 +240,13 @@ export class ProfileService {
   /** Returns the pooled fetcher for an identity, creating it on first use. */
   #fetcherFor(session: ResolvedSession): LinkedInFetcher {
     this.#reap();
-    console.log('fetcher requested for session:', session.key);
     const existing = this.#pool.get(session.key);
     if (existing) {
       existing.lastUsed = Date.now();
       return existing.fetcher;
     }
-    console.log('no existing fetcher found for session:', session.key);
     const fetcher = new LinkedInFetcher(this.config, this.log, session);
     this.#pool.set(session.key, { fetcher, lastUsed: Date.now() });
-    console.log('session pooled for session:', session.key);
     this.log.debug({ session: session.key, mode: session.mode }, 'session pooled');
     return fetcher;
   }

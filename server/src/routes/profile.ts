@@ -81,7 +81,6 @@ export function profileRouter(service: ProfileService, config: Config): Router {
       const parsed = RequestSchema.safeParse(read(req));
       if (!parsed.success) {
         const issue = parsed.error.issues[0];
-        console.error('Request validation failed:', parsed.error.issues[0]);
         const code = issue?.path[0] === 'credentials' ? 'BAD_REQUEST' : 'INVALID_URL';
         throw new AppError(code, issue?.message ?? 'Invalid request.', {
           details: parsed.error.issues,
