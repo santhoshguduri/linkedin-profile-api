@@ -1,30 +1,29 @@
----
-title: LinkedIn Profile API
-emoji: 🔎
-colorFrom: blue
-colorTo: indigo
-sdk: docker
-app_port: 3000
-pinned: false
----
-
 # LinkedIn Profile API
 
 Accepts a LinkedIn profile URL and returns the profile as structured JSON. Full
 documentation, API reference and design notes live in the [repository
 README](https://github.com/santhoshguduri/linkedin-profile-api).
 
-## Why this directory has its own README
+## Deploying
 
-The front matter above is what a Hugging Face Space reads to build this folder
-as a Docker Space: `sdk: docker` selects the `Dockerfile` beside this file, and
-`app_port` tells the router which port the container listens on. The file is
-inert everywhere else, so the same directory deploys unchanged to any container
-host.
+The `Dockerfile` beside this file is the whole deployment. The server binds
+`0.0.0.0` and takes its port from `PORT`, so it needs no changes on any container
+host. Google Cloud Run, from this directory:
+
+```bash
+gcloud run deploy linkedin-profile-api --source . \
+  --memory 2Gi --cpu 2 --concurrency 1 --timeout 120 \
+  --execution-environment gen2 --allow-unauthenticated \
+  --set-secrets LI_AT=LI_AT:latest
+```
+
+`--concurrency 1` is not a tuning preference. The default is 80 requests per
+instance and a render holds roughly half a gigabyte, so a second concurrent
+lookup takes the container out regardless of how much memory it was given.
 
 ## Configuration
 
-Set these as Space secrets rather than committing them.
+Supply these through the host's secret store, never through a committed file.
 
 | Variable | Required | Purpose |
 | --- | --- | --- |
