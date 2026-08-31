@@ -1,0 +1,24 @@
+# What gets uploaded to Cloud Build's staging bucket. Without this file gcloud
+# falls back to a .gitignore in this directory, and there isn't one -- the
+# repository's rules live at the root, a level above where `gcloud run deploy`
+# is invoked. That gap would ship node_modules, .env and the raw LinkedIn
+# captures into a Cloud Storage bucket. The captures embed data-csrf, which is
+# the JSESSIONID verbatim, so this is a credential leak and not just weight.
+.git
+.gitignore
+
+node_modules
+dist
+*.tsbuildinfo
+
+.env
+.env.*
+!.env.example
+
+fixtures/raw
+*.raw.html
+debug/
+*.log
+
+# The image builds from source; tests and fixtures are not part of it.
+tests
